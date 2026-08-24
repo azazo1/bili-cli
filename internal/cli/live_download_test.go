@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/azazo1/bilibili-cli/internal/output"
 )
@@ -53,5 +54,43 @@ func TestLiveDownloadWorksInReadOnlyMode(t *testing.T) {
 	}
 	if string(data) != "FLV test stream" {
 		t.Fatalf("unexpected stream data: %q", data)
+	}
+}
+
+func TestParseLiveQuality(t *testing.T) {
+	cases := map[string]int{
+		"流畅": 80,
+		"高清": 150,
+		"蓝光": 400,
+		"原画": 10000,
+		"4K": 20000,
+		"杜比": 30000,
+		"400": 400,
+	}
+	for input, want := range cases {
+		got, err := parseLiveQuality(input)
+		if err != nil || got != want {
+			t.Fatalf("parseLiveQuality(%q) = %d, %v", input, got, err)
+		}
+	}
+	if _, err := parseLiveQuality("未知"); err == nil {
+		t.Fatal("expected unsupported quality error")
+	}
+}
+
+func TestParseLiveLimits(t *testing.T) {
+	duration, err := parseLiveDuration("90m")
+	if err != nil || duration != 90*time.Minute {
+		t.Fatalf("parseLiveDuration = %s, %v", duration, err)
+	}
+	size, err := parseLiveSize("1.5GB")
+	if err != nil || size != int64(1.5*(1<<30)) {
+		t.Fatalf("parseLiveSize = %d, %v", size, err)
+	}
+	if _, err := parseLiveDuration("0m"); err == nil {
+		t.Fatal("expected invalid duration error")
+	}
+	if _, err := parseLiveSize("large"); err == nil {
+		t.Fatal("expected invalid size error")
 	}
 }

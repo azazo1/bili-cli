@@ -1,9 +1,11 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,8 +26,8 @@ func newLiveCommand(app *App) *cobra.Command {
 }
 
 func newLiveDownloadCommand(app *App) *cobra.Command {
-	var outputDir, format string
-	var quality int
+	var outputDir, format, maxDurationValue, maxSizeValue string
+	var quality string
 	command := &cobra.Command{
 		Use:   "download ROOM_OR_URL",
 		Short: "下载直播流并持续录制直到停止",
@@ -40,12 +42,31 @@ func newLiveDownloadCommand(app *App) *cobra.Command {
 			if format != "flv" && format != "hls" {
 				return app.invalidInput(cmd, "--format 仅支持 flv 或 hls", mode)
 			}
+			qualityCode, qualityErr := parseLiveQuality(quality)
+			if qualityErr != nil {
+				return app.invalidInput(cmd, qualityErr.Error(), mode)
+			}
+			maxDuration, durationErr := parseLiveDuration(maxDurationValue)
+			if durationErr != nil {
+				return app.invalidInput(cmd, durationErr.Error(), mode)
+			}
+			maxSize, sizeErr := parseLiveSize(maxSizeValue)
+			if sizeErr != nil {
+				return app.invalidInput(cmd, sizeErr.Error(), mode)
+			}
 			ctx := contextOrBackground(cmd.Context())
-			stream, fetchErr := app.API.GetLiveStream(ctx, roomID, quality, format, app.OptionalCredential(ctx))
+			stream, fetchErr := app.API.GetLiveStream(ctx, roomID, qualityCode, format, app.OptionalCredential(ctx))
 			if fetchErr != nil {
 				return app.apiFailure(fetchErr, "获取直播地址", mode)
 			}
 			recordingStarted := time.Now()
+			recordingCtx, cancelRecording := context.WithCancel(ctx)
+			defer cancelRecording()
+			var stopTimer *time.Timer
+			if maxDuration > 0 {
+				stopTimer = time.AfterFunc(maxDuration, cancelRecording)
+				defer stopTimer.Stop()
+			}
 			outDir := "."
 			if outputDir != "" {
 				outDir = expandHome(outputDir)
@@ -66,8 +87,14 @@ func newLiveDownloadCommand(app *App) *cobra.Command {
 			fmt.Fprintf(app.Out.Stdout, "直播间 %s: %s\n", roomID, stream.Title)
 			fmt.Fprintf(app.Out.Stdout, "流格式: %s, 编码: %s\n", stream.Format, stream.Codec)
 			fmt.Fprintf(app.Out.Stdout, "开始录制, 停止请按 Ctrl-C. 输出文件: %s\n", outputPath)
-			progress := newDownloadProgressBar(app.Out.Stdout, "直播流")
-			bytes, downloadErr := media.DownloadLiveStreamWithProgress(ctx, stream.URL, outputPath, app.Logger, progress.Update)
+			progress := newDownloadProgressBarWithLimits(app.Out.Stdout, "直播流", maxDuration, maxSize)
+			updateProgress := func(current media.DownloadProgress) {
+				progress.Update(current)
+				if maxSize > 0 && current.Written >= maxSize {
+					cancelRecording()
+				}
+			}
+			bytes, downloadErr := media.DownloadLiveStreamWithProgress(recordingCtx, stream.URL, outputPath, app.Logger, updateProgress)
 			progress.Finish()
 			if downloadErr != nil {
 				return app.Fail(downloadErr, "录制直播流", mode)
@@ -77,7 +104,61 @@ func newLiveDownloadCommand(app *App) *cobra.Command {
 		},
 	}
 	command.Flags().StringVarP(&outputDir, "output", "o", "", "输出目录, 默认当前文件夹")
-	command.Flags().IntVarP(&quality, "quality", "q", 10000, "画质编号, 默认 10000 原画")
+	command.Flags().StringVarP(&quality, "quality", "q", "原画", "画质: 流畅, 高清, 蓝光, 原画, 4K, 杜比, 或画质编号")
 	command.Flags().StringVarP(&format, "format", "f", "flv", "流格式: flv 或 hls")
+	command.Flags().StringVar(&maxDurationValue, "max-duration", "", "最大录制时长, 例如 30m 或 2h")
+	command.Flags().StringVar(&maxSizeValue, "max-size", "", "最大录制大小, 例如 512MB 或 2GB")
 	return command
+}
+
+func parseLiveDuration(value string) (time.Duration, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, nil
+	}
+	duration, err := time.ParseDuration(value)
+	if err != nil || duration <= 0 {
+		return 0, fmt.Errorf("--max-duration 必须是正时长, 例如 30m 或 2h")
+	}
+	return duration, nil
+}
+
+func parseLiveSize(value string) (int64, error) {
+	value = strings.ToUpper(strings.TrimSpace(value))
+	if value == "" {
+		return 0, nil
+	}
+	multiplier := float64(1)
+	for suffix, factor := range map[string]float64{"KB": 1 << 10, "MB": 1 << 20, "GB": 1 << 30, "TB": 1 << 40, "B": 1} {
+		if strings.HasSuffix(value, suffix) {
+			value = strings.TrimSpace(strings.TrimSuffix(value, suffix))
+			multiplier = factor
+			break
+		}
+	}
+	number, err := strconv.ParseFloat(value, 64)
+	if err != nil || number <= 0 || number*multiplier > float64(^uint64(0)>>1) {
+		return 0, fmt.Errorf("--max-size 必须是正大小, 例如 512MB 或 2GB")
+	}
+	return int64(number * multiplier), nil
+}
+
+func parseLiveQuality(value string) (int, error) {
+	value = strings.TrimSpace(value)
+	aliases := map[string]int{
+		"流畅": 80,
+		"高清": 150,
+		"蓝光": 400,
+		"原画": 10000,
+		"4k": 20000,
+		"杜比": 30000,
+	}
+	if quality, ok := aliases[strings.ToLower(value)]; ok {
+		return quality, nil
+	}
+	quality, err := strconv.Atoi(value)
+	if err != nil || quality < 1 {
+		return 0, fmt.Errorf("--quality 仅支持流畅, 高清, 蓝光, 原画, 4K, 杜比或正整数画质编号")
+	}
+	return quality, nil
 }

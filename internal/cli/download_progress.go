@@ -17,13 +17,21 @@ type downloadProgressBar struct {
 	enabled     bool
 	label       string
 	lastWidth   int
+	maxDuration time.Duration
+	maxBytes    int64
 }
 
 func newDownloadProgressBar(destination io.Writer, label string) *downloadProgressBar {
+	return newDownloadProgressBarWithLimits(destination, label, 0, 0)
+}
+
+func newDownloadProgressBarWithLimits(destination io.Writer, label string, maxDuration time.Duration, maxBytes int64) *downloadProgressBar {
 	return &downloadProgressBar{
 		destination: destination,
 		enabled:     isInteractiveDownloadOutput(destination),
 		label:       label,
+		maxDuration: maxDuration,
+		maxBytes:    maxBytes,
 	}
 }
 
@@ -47,11 +55,31 @@ func (p *downloadProgressBar) Finish() {
 }
 
 func (p *downloadProgressBar) line(progress media.DownloadProgress) string {
-	elapsed := formatElapsed(progress.Elapsed)
-	if progress.Total <= 0 {
-		return fmt.Sprintf("%s [%s] %s 已录制 %s", p.label, strings.Repeat("-", downloadProgressWidth), formatDownloadSize(progress.Written), elapsed)
+	if p.maxDuration <= 0 && p.maxBytes <= 0 {
+		if progress.Total <= 0 {
+			return fmt.Sprintf("%s [%s] %s 已录制 %s", p.label, strings.Repeat("-", downloadProgressWidth), formatDownloadSize(progress.Written), formatElapsed(progress.Elapsed))
+		}
+		percentage := int(progress.Written * 100 / progress.Total)
+		if percentage < 0 {
+			percentage = 0
+		}
+		if percentage > 100 {
+			percentage = 100
+		}
+		filled := downloadProgressWidth * percentage / 100
+		bar := strings.Repeat("=", filled) + strings.Repeat("-", downloadProgressWidth-filled)
+		return fmt.Sprintf("%s [%s] %3d%% %s/%s", p.label, bar, percentage, formatDownloadSize(progress.Written), formatDownloadSize(progress.Total))
 	}
-	percentage := int(progress.Written * 100 / progress.Total)
+	percentage := 0
+	if p.maxDuration > 0 {
+		percentage = int(progress.Elapsed * 100 / p.maxDuration)
+	}
+	if p.maxBytes > 0 {
+		bytesPercentage := int(progress.Written * 100 / p.maxBytes)
+		if p.maxDuration <= 0 || bytesPercentage < percentage {
+			percentage = bytesPercentage
+		}
+	}
 	if percentage < 0 {
 		percentage = 0
 	}
@@ -60,7 +88,18 @@ func (p *downloadProgressBar) line(progress media.DownloadProgress) string {
 	}
 	filled := downloadProgressWidth * percentage / 100
 	bar := strings.Repeat("=", filled) + strings.Repeat("-", downloadProgressWidth-filled)
-	return fmt.Sprintf("%s [%s] %3d%% %s/%s", p.label, bar, percentage, formatDownloadSize(progress.Written), formatDownloadSize(progress.Total))
+	parts := []string{fmt.Sprintf("%3d%%", percentage)}
+	if p.maxDuration > 0 {
+		parts = append(parts, fmt.Sprintf("时长 %s/%s", formatElapsed(progress.Elapsed), formatElapsed(p.maxDuration)))
+	} else {
+		parts = append(parts, "时长 "+formatElapsed(progress.Elapsed))
+	}
+	if p.maxBytes > 0 {
+		parts = append(parts, fmt.Sprintf("大小 %s/%s", formatDownloadSize(progress.Written), formatDownloadSize(p.maxBytes)))
+	} else {
+		parts = append(parts, "大小 "+formatDownloadSize(progress.Written))
+	}
+	return fmt.Sprintf("%s [%s] %s", p.label, bar, strings.Join(parts, " "))
 }
 
 func formatElapsed(value time.Duration) string {

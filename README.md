@@ -86,10 +86,12 @@ bili video download BV1ABcsztEcY --with-srt
 bili live download 5440
 bili live download "https://live.bilibili.com/5440" -o ./live
 bili live download 5440 --quality 400 --format flv
+bili live download 5440 --quality 原画
+bili live download 5440 --quality 蓝光
 bili live download 5440 --format hls
 ```
 
-`bili live download` 会获取当前直播间的播放地址并持续写入文件, 直到直播结束或按下 `Ctrl-C`. 文件名使用直播标题和开始录制时间 `<直播标题>_YYYYMMDD_HHMMSS.flv`, 不再仅使用房间号. 默认保存为 `.flv`, `--format hls` 保存为 `.ts`. 按下 `Ctrl-C` 会保留已录制内容并完成临时文件清理. 直播下载是读取操作, 在 `safety.read_only = true` 下可用. 直播流通常没有总长度, 交互终端会显示已写入字节数和已录制时长, 日志会按阶段输出进度.
+`bili live download` 会获取当前直播间的播放地址并持续写入文件, 直到直播结束或按下 `Ctrl-C`. 文件名使用直播标题和开始录制时间 `<直播标题>_YYYYMMDD_HHMMSS.flv`, 不再仅使用房间号. 默认保存为 `.flv`, `--format hls` 保存为 `.ts`. `--quality` 支持 `流畅`, `高清`, `蓝光`, `原画`, `4K`, `杜比` 和数字画质编号, 默认是 `原画`. 按下 `Ctrl-C` 会保留已录制内容并完成临时文件清理. 直播下载是读取操作, 在 `safety.read_only = true` 下可用. 直播流通常没有总长度, 交互终端会显示已写入字节数和已录制时长, 日志会按阶段输出进度.
 
 ## 用户列表
 
