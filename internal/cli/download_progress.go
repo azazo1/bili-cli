@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/azazo1/bilibili-cli/internal/media"
 )
@@ -46,8 +47,9 @@ func (p *downloadProgressBar) Finish() {
 }
 
 func (p *downloadProgressBar) line(progress media.DownloadProgress) string {
+	elapsed := formatElapsed(progress.Elapsed)
 	if progress.Total <= 0 {
-		return fmt.Sprintf("%s [%s] %s", p.label, strings.Repeat("-", downloadProgressWidth), formatDownloadSize(progress.Written))
+		return fmt.Sprintf("%s [%s] %s 已录制 %s", p.label, strings.Repeat("-", downloadProgressWidth), formatDownloadSize(progress.Written), elapsed)
 	}
 	percentage := int(progress.Written * 100 / progress.Total)
 	if percentage < 0 {
@@ -59,6 +61,11 @@ func (p *downloadProgressBar) line(progress media.DownloadProgress) string {
 	filled := downloadProgressWidth * percentage / 100
 	bar := strings.Repeat("=", filled) + strings.Repeat("-", downloadProgressWidth-filled)
 	return fmt.Sprintf("%s [%s] %3d%% %s/%s", p.label, bar, percentage, formatDownloadSize(progress.Written), formatDownloadSize(progress.Total))
+}
+
+func formatElapsed(value time.Duration) string {
+	seconds := int64(value / time.Second)
+	return fmt.Sprintf("%02d:%02d:%02d", seconds/3600, (seconds/60)%60, seconds%60)
 }
 
 func isInteractiveDownloadOutput(destination io.Writer) bool {

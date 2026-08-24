@@ -27,7 +27,7 @@ func NewRoot(app *App) *cobra.Command {
 	root.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "启用调试日志")
 	root.PersistentFlags().BoolVar(&app.Out.NoTruncate, "no-truncate", false, "表格不按终端宽度截断")
 	root.AddCommand(newMeCommand(app))
-	root.AddCommand(newVideoCommand(app), newUserCommand(app), newSearchCommand(app), newDynamicCommand(app), newImageCommand(app))
+	root.AddCommand(newVideoCommand(app), newLiveCommand(app), newUserCommand(app), newSearchCommand(app), newDynamicCommand(app), newImageCommand(app))
 	root.AddCommand(newConfigCommand(app))
 	configureUsageErrors(root, app)
 	return root

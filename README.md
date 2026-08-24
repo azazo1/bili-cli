@@ -12,6 +12,7 @@
 - 点赞, 投币, 一键三连和取消关注.
 - 保存凭证, QR 登录, JSON/YAML 稳定 envelope 输出.
 - 视频音频流和视频流下载, 支持仅下载音频或视频.
+- 直播流下载, 支持 FLV 和 HLS, 可指定画质并持续录制.
 
 ## 致谢
 
@@ -78,6 +79,17 @@ bili video download BV1ABcsztEcY --with-srt
 媒体下载会在服务器支持 HTTP Range 时使用配置的并发线程数分段下载, 不支持时自动回退为单请求下载.
 
 多分P视频必须在 URL 中指定 `?p=N`. 未指定时会列出所有分P及其标题, 不会下载第一P. 文件名会包含 `P` 序号和该分P的标题. `--with-srt` 会尝试选择并保存一条字幕, 优先中文, 同语言优先人工字幕, 其次 AI, 再按英文和其他语言兜底. 交互终端会显示下载进度条. `--audio-only` 和 `--video-only` 不能同时使用.
+
+## 直播下载
+
+```shell
+bili live download 5440
+bili live download "https://live.bilibili.com/5440" -o ./live
+bili live download 5440 --quality 400 --format flv
+bili live download 5440 --format hls
+```
+
+`bili live download` 会获取当前直播间的播放地址并持续写入文件, 直到直播结束或按下 `Ctrl-C`. 文件名使用直播标题和开始录制时间 `<直播标题>_YYYYMMDD_HHMMSS.flv`, 不再仅使用房间号. 默认保存为 `.flv`, `--format hls` 保存为 `.ts`. 按下 `Ctrl-C` 会保留已录制内容并完成临时文件清理. 直播下载是读取操作, 在 `safety.read_only = true` 下可用. 直播流通常没有总长度, 交互终端会显示已写入字节数和已录制时长, 日志会按阶段输出进度.
 
 ## 用户列表
 
