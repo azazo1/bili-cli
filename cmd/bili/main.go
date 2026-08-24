@@ -5,13 +5,25 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/signal"
 
 	"github.com/azazo1/bilibili-cli/internal/cli"
 )
 
 func main() {
 	app := cli.NewApp()
-	err := app.Execute(context.Background())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	interrupts := make(chan os.Signal, 2)
+	signal.Notify(interrupts, os.Interrupt)
+	defer signal.Stop(interrupts)
+	go func() {
+		<-interrupts
+		cancel()
+		<-interrupts
+		os.Exit(130)
+	}()
+	err := app.Execute(ctx)
 	if err == nil {
 		return
 	}
