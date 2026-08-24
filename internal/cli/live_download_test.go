@@ -87,6 +87,14 @@ func TestParseLiveLimits(t *testing.T) {
 	if err != nil || size != int64(1.5*(1<<30)) {
 		t.Fatalf("parseLiveSize = %d, %v", size, err)
 	}
+	size, err = parseLiveSize("10MB")
+	if err != nil || size != 10*(1<<20) {
+		t.Fatalf("parseLiveSize(10MB) = %d, %v", size, err)
+	}
+	size, err = parseLiveSize("10m")
+	if err != nil || size != 10*(1<<20) {
+		t.Fatalf("parseLiveSize(10m) = %d, %v", size, err)
+	}
 	if _, err := parseLiveDuration("0m"); err == nil {
 		t.Fatal("expected invalid duration error")
 	}

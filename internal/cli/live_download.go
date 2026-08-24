@@ -99,6 +99,9 @@ func newLiveDownloadCommand(app *App) *cobra.Command {
 			if downloadErr != nil {
 				return app.Fail(downloadErr, "录制直播流", mode)
 			}
+			if finalizeErr := media.FinalizeLiveRecording(outputPath, app.Logger); finalizeErr != nil {
+				fmt.Fprintf(app.Out.Stdout, "文件时长元数据修复失败, 已保留原始文件: %v\n", finalizeErr)
+			}
 			fmt.Fprintf(app.Out.Stdout, "直播录制完成: %s (%.1f MB)\n", outputPath, float64(bytes)/(1024*1024))
 			return nil
 		},
@@ -129,10 +132,23 @@ func parseLiveSize(value string) (int64, error) {
 		return 0, nil
 	}
 	multiplier := float64(1)
-	for suffix, factor := range map[string]float64{"KB": 1 << 10, "MB": 1 << 20, "GB": 1 << 30, "TB": 1 << 40, "B": 1} {
-		if strings.HasSuffix(value, suffix) {
-			value = strings.TrimSpace(strings.TrimSuffix(value, suffix))
-			multiplier = factor
+	for _, item := range []struct {
+		suffix string
+		factor  float64
+	}{
+		{"TB", 1 << 40},
+		{"T", 1 << 40},
+		{"GB", 1 << 30},
+		{"G", 1 << 30},
+		{"MB", 1 << 20},
+		{"M", 1 << 20},
+		{"KB", 1 << 10},
+		{"K", 1 << 10},
+		{"B", 1},
+	} {
+		if strings.HasSuffix(value, item.suffix) {
+			value = strings.TrimSpace(strings.TrimSuffix(value, item.suffix))
+			multiplier = item.factor
 			break
 		}
 	}

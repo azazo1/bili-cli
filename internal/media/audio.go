@@ -64,21 +64,6 @@ func DownloadLiveStreamWithProgress(ctx context.Context, streamURL, outputPath s
 }
 
 func downloadLiveStreamOnce(ctx context.Context, mediaURL, outputPath string, logger *slog.Logger, progress ProgressFunc) (int64, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, mediaURL, nil)
-	if err != nil {
-		return 0, err
-	}
-	for key, value := range downloadHeaders {
-		req.Header.Set(key, value)
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return 0, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return 0, fmt.Errorf("HTTP %d", resp.StatusCode)
-	}
 	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
 		return 0, err
 	}
@@ -98,58 +83,111 @@ func downloadLiveStreamOnce(ctx context.Context, mediaURL, outputPath string, lo
 	var written int64
 	lastReport := started
 	lastProgress := started
+	finalize := func() (int64, error) {
+		keepPartial = true
+		if err := file.Close(); err != nil {
+			return 0, err
+		}
+		if err := os.Rename(tmpPath, outputPath); err != nil {
+			return 0, err
+		}
+		if progress != nil {
+			progress(DownloadProgress{Written: written, Elapsed: time.Since(started)})
+		}
+		return written, nil
+	}
 	if progress != nil {
-		progress(DownloadProgress{Total: resp.ContentLength, Elapsed: 0})
+		progress(DownloadProgress{Elapsed: 0})
 	}
 	buffer := make([]byte, 256*1024)
 	for {
-		read, readErr := resp.Body.Read(buffer)
-		if read > 0 {
-			count, writeErr := file.Write(buffer[:read])
-			written += int64(count)
-			if writeErr != nil {
-				return 0, writeErr
-			}
-			elapsed := time.Since(started)
-			if written%(1024*1024) < int64(read) || time.Since(lastReport) >= 5*time.Second {
-				logger.Info("直播流录制进度", "bytes", written, "elapsed", elapsed.Round(time.Second))
-				lastReport = time.Now()
-			}
-			if progress != nil && time.Since(lastProgress) >= 100*time.Millisecond {
-				progress(DownloadProgress{Written: written, Total: resp.ContentLength, Elapsed: elapsed})
-				lastProgress = time.Now()
-			}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, mediaURL, nil)
+		if err != nil {
+			return 0, err
 		}
-		if readErr == io.EOF {
-			break
+		for key, value := range downloadHeaders {
+			req.Header.Set(key, value)
 		}
-		if readErr != nil {
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
 			if ctx.Err() != nil {
-				keepPartial = true
-				if closeErr := file.Close(); closeErr != nil {
-					return 0, closeErr
-				}
-				if renameErr := os.Rename(tmpPath, outputPath); renameErr != nil {
-					return 0, renameErr
-				}
-				if progress != nil {
-					progress(DownloadProgress{Written: written, Total: resp.ContentLength, Elapsed: time.Since(started)})
-				}
-				return written, nil
+				return finalize()
 			}
-			return 0, readErr
+			return 0, err
+		}
+		if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+			_ = resp.Body.Close()
+			return 0, fmt.Errorf("HTTP %d", resp.StatusCode)
+		}
+		for {
+			read, readErr := resp.Body.Read(buffer)
+			if read > 0 {
+				count, writeErr := file.Write(buffer[:read])
+				written += int64(count)
+				if writeErr != nil {
+					_ = resp.Body.Close()
+					return 0, writeErr
+				}
+				elapsed := time.Since(started)
+				if written%(1024*1024) < int64(read) || time.Since(lastReport) >= 5*time.Second {
+					logger.Info("直播流录制进度", "bytes", written, "elapsed", elapsed.Round(time.Second))
+					lastReport = time.Now()
+				}
+				if progress != nil && time.Since(lastProgress) >= 100*time.Millisecond {
+					progress(DownloadProgress{Written: written, Elapsed: elapsed})
+					lastProgress = time.Now()
+				}
+			}
+			if readErr == io.EOF {
+				break
+			}
+			if readErr != nil {
+				_ = resp.Body.Close()
+				if ctx.Err() != nil {
+					return finalize()
+				}
+				return 0, readErr
+			}
+		}
+		_ = resp.Body.Close()
+		if resp.ContentLength >= 0 {
+			return finalize()
+		}
+		if ctx.Err() != nil {
+			return finalize()
+		}
+		logger.Info("直播流连接结束, 准备重连", "bytes", written, "elapsed", time.Since(started).Round(time.Second))
+		select {
+		case <-ctx.Done():
+			return finalize()
+		case <-time.After(500 * time.Millisecond):
 		}
 	}
-	if err := file.Close(); err != nil {
-		return 0, err
+}
+func FinalizeLiveRecording(path string, logger *slog.Logger) error {
+	if logger == nil {
+		logger = slog.Default()
 	}
-	if err := os.Rename(tmpPath, outputPath); err != nil {
-		return 0, err
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		return errors.New("修复直播文件时长需要 ffmpeg, 未找到可执行文件")
 	}
-	if progress != nil {
-		progress(DownloadProgress{Written: written, Total: resp.ContentLength, Elapsed: time.Since(started)})
+	tmpPath := path + ".fixed" + filepath.Ext(path)
+	defer os.Remove(tmpPath)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	command := exec.CommandContext(ctx, "ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", path, "-map", "0", "-c", "copy", tmpPath)
+	if output, err := command.CombinedOutput(); err != nil {
+		message := strings.TrimSpace(string(output))
+		if message == "" {
+			message = err.Error()
+		}
+		logger.Warn("修复直播文件时长失败, 保留原始文件", "path", path, "error", message)
+		return fmt.Errorf("修复直播文件时长失败: %s", message)
 	}
-	return written, nil
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("替换直播文件失败: %w", err)
+	}
+	return nil
 }
 func download(ctx context.Context, mediaURL, outputPath string, logger *slog.Logger, label string, progress ProgressFunc) (int64, error) {
 	return downloadWithThreads(ctx, mediaURL, outputPath, logger, label, progress, DefaultDownloadThreads)
