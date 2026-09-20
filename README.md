@@ -194,7 +194,7 @@ bili watch rm 1
 
 `watch check` 适合放进 cron. `watch run` 按 `watch.interval_seconds` 或 `--interval` 常驻循环, 最短间隔 10 秒. 规则之间会等待 `watch.request_gap_ms`, 遇到限流时跳过本轮剩余规则. 动态订阅需要登录, 未登录只影响该条规则.
 
-新事件会打印到终端. 配置 `watch.notify.webhook` 后会 POST 统一 envelope; `watch.notify.exec` 会对每条事件执行命令, 并注入 `BILI_WATCH_KIND`, `BILI_WATCH_TITLE`, `BILI_WATCH_URL`, `BILI_WATCH_SUMMARY` 和 `BILI_WATCH_JSON`.
+新事件会打印到终端. 配置 `watch.notify.webhook` 后会 POST 统一 envelope; `watch.notify.exec` 会对每条事件执行命令, 并注入 `BILI_WATCH_KIND`, `BILI_WATCH_TITLE`, `BILI_WATCH_URL`, `BILI_WATCH_SUMMARY` 和 `BILI_WATCH_JSON`. Unix 使用 `/bin/sh -c`, Windows 使用 `cmd /C`.
 
 ## 输出
 

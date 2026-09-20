@@ -9,6 +9,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -44,8 +47,12 @@ func TestNotifierPostsWebhookEnvelope(t *testing.T) {
 func TestNotifierExecSetsEnvironment(t *testing.T) {
 	dir := t.TempDir()
 	out := filepath.Join(dir, "env.txt")
+	command := `printf '%s\n' "$BILI_WATCH_KIND" "$BILI_WATCH_TITLE" "$BILI_WATCH_URL" > ` + out
+	if runtime.GOOS == "windows" {
+		command = `(echo %BILI_WATCH_KIND%& echo %BILI_WATCH_TITLE%& echo %BILI_WATCH_URL%) > ` + strconv.Quote(out)
+	}
 	notifier := Notifier{
-		Exec:   "printf '%s\\n' \"$BILI_WATCH_KIND\" \"$BILI_WATCH_TITLE\" \"$BILI_WATCH_URL\" > " + out,
+		Exec:   command,
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 	err := notifier.Send(context.Background(), []Event{{
@@ -61,7 +68,8 @@ func TestNotifierExecSetsEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(data) != "up.live\nlive title\nhttps://live.bilibili.com/5440\n" {
-		t.Fatalf("unexpected exec env file: %q", data)
+	got := strings.ReplaceAll(string(data), "\r\n", "\n")
+	if got != "up.live\nlive title\nhttps://live.bilibili.com/5440\n" {
+		t.Fatalf("unexpected exec env file: %q", got)
 	}
 }

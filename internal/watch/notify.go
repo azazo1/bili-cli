@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -96,7 +97,7 @@ func (n Notifier) runExec(ctx context.Context, command string, event Event) erro
 	if err != nil {
 		return err
 	}
-	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", command)
+	cmd := exec.CommandContext(ctx, shellName(), shellArgs(command)...)
 	cmd.Env = append(os.Environ(),
 		"BILI_WATCH_KIND="+string(event.Kind),
 		"BILI_WATCH_TITLE="+event.Title,
@@ -111,6 +112,23 @@ func (n Notifier) runExec(ctx context.Context, command string, event Event) erro
 		return err
 	}
 	return nil
+}
+
+func shellName() string {
+	if runtime.GOOS == "windows" {
+		if comspec := strings.TrimSpace(os.Getenv("ComSpec")); comspec != "" {
+			return comspec
+		}
+		return "cmd.exe"
+	}
+	return "/bin/sh"
+}
+
+func shellArgs(command string) []string {
+	if runtime.GOOS == "windows" {
+		return []string{"/C", command}
+	}
+	return []string{"-c", command}
 }
 
 func (n Notifier) logger() *slog.Logger {
