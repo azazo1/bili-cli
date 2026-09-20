@@ -14,7 +14,7 @@ func TestLoadMissingReturnsDefaultsWithoutCreatingFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.Version != CurrentVersion || config.Safety.ReadOnly || config.Output.Format != "auto" || config.Download.Threads != 8 {
+	if config.Version != CurrentVersion || config.Safety.ReadOnly || config.Output.Format != "auto" || config.Download.Threads != 8 || config.Watch.IntervalSeconds != 300 || config.Watch.RequestGapMs != 400 {
 		t.Fatalf("unexpected defaults: %#v", config)
 	}
 	if _, err := os.Stat(store.File); !os.IsNotExist(err) {
@@ -64,7 +64,7 @@ func TestUpgradeMergesDefaultsAndPreservesValues(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(data)
-	for _, expected := range []string{"version = 2", "threads = 4", "timeout_seconds = 30", "confirm_dangerous_actions = true", "value ="} {
+	for _, expected := range []string{"version = 3", "threads = 4", "timeout_seconds = 30", "confirm_dangerous_actions = true", "interval_seconds = 300", "value ="} {
 		if !strings.Contains(text, expected) {
 			t.Fatalf("upgraded config missing %q: %s", expected, text)
 		}
@@ -120,7 +120,7 @@ func TestStatusReportsMissingAndSetFields(t *testing.T) {
 	if report.Status != "missing" || report.Exists || report.Loaded || !report.NeedsUpgrade {
 		t.Fatalf("unexpected missing status: %#v", report)
 	}
-	if report.EffectiveVersion != CurrentVersion || len(report.Fields) != 6 {
+	if report.EffectiveVersion != CurrentVersion || len(report.Fields) != 10 {
 		t.Fatalf("unexpected missing status details: %#v", report)
 	}
 	if err := os.WriteFile(store.File, []byte("version = 2\n[download]\nthreads = 4\n"), 0o600); err != nil {

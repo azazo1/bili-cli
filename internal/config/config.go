@@ -10,10 +10,10 @@ import (
 	"github.com/pelletier/go-toml/v2"
 )
 
-const CurrentVersion = 2
+const CurrentVersion = 3
 
 const DefaultTOML = `# Bilibili CLI settings.
-version = 2
+version = 3
 
 [output]
 # auto, rich, json, or yaml.
@@ -31,6 +31,18 @@ threads = 8
 read_only = false
 # Ask before deleting a dynamic or unfollowing an account.
 confirm_dangerous_actions = true
+
+[watch]
+# 常驻轮询间隔, 单位秒.
+interval_seconds = 300
+# 规则之间的请求间隔, 单位毫秒.
+request_gap_ms = 400
+
+[watch.notify]
+# 事件 JSON POST 地址, 留空表示关闭.
+webhook = ""
+# 每条事件执行的命令, 留空表示关闭.
+exec = ""
 `
 
 type Config struct {
@@ -39,6 +51,7 @@ type Config struct {
 	Network  NetworkConfig  `toml:"network" json:"network" yaml:"network"`
 	Download DownloadConfig `toml:"download" json:"download" yaml:"download"`
 	Safety   SafetyConfig   `toml:"safety" json:"safety" yaml:"safety"`
+	Watch    WatchConfig    `toml:"watch" json:"watch" yaml:"watch"`
 }
 
 type OutputConfig struct {
@@ -58,6 +71,17 @@ type SafetyConfig struct {
 	ConfirmDangerousActions bool `toml:"confirm_dangerous_actions" json:"confirm_dangerous_actions" yaml:"confirm_dangerous_actions"`
 }
 
+type WatchConfig struct {
+	IntervalSeconds int               `toml:"interval_seconds" json:"interval_seconds" yaml:"interval_seconds"`
+	RequestGapMs    int               `toml:"request_gap_ms" json:"request_gap_ms" yaml:"request_gap_ms"`
+	Notify          WatchNotifyConfig `toml:"notify" json:"notify" yaml:"notify"`
+}
+
+type WatchNotifyConfig struct {
+	Webhook string `toml:"webhook" json:"webhook" yaml:"webhook"`
+	Exec    string `toml:"exec" json:"exec" yaml:"exec"`
+}
+
 func Default() Config {
 	return Config{
 		Version: CurrentVersion,
@@ -73,6 +97,10 @@ func Default() Config {
 		Safety: SafetyConfig{
 			ReadOnly:                false,
 			ConfirmDangerousActions: true,
+		},
+		Watch: WatchConfig{
+			IntervalSeconds: 300,
+			RequestGapMs:    400,
 		},
 	}
 }
@@ -293,6 +321,29 @@ func validate(config Config) (Config, bool, error) {
 	}
 	if config.Download.Threads < 1 || config.Download.Threads > 128 {
 		return Config{}, false, fmt.Errorf("download.threads 必须在 1 到 128 之间")
+	}
+	if config.Watch.IntervalSeconds == 0 {
+		config.Watch.IntervalSeconds = Default().Watch.IntervalSeconds
+		changed = true
+	}
+	if config.Watch.IntervalSeconds < 10 || config.Watch.IntervalSeconds > 86400 {
+		return Config{}, false, fmt.Errorf("watch.interval_seconds 必须在 10 到 86400 之间")
+	}
+	if config.Watch.RequestGapMs < 0 || config.Watch.RequestGapMs > 10000 {
+		return Config{}, false, fmt.Errorf("watch.request_gap_ms 必须在 0 到 10000 之间")
+	}
+	webhook := strings.TrimSpace(config.Watch.Notify.Webhook)
+	if webhook != config.Watch.Notify.Webhook {
+		config.Watch.Notify.Webhook = webhook
+		changed = true
+	}
+	if webhook != "" && !strings.HasPrefix(webhook, "http://") && !strings.HasPrefix(webhook, "https://") {
+		return Config{}, false, fmt.Errorf("watch.notify.webhook 必须是 http 或 https 地址")
+	}
+	execCommand := strings.TrimSpace(config.Watch.Notify.Exec)
+	if execCommand != config.Watch.Notify.Exec {
+		config.Watch.Notify.Exec = execCommand
+		changed = true
 	}
 	return config, changed, nil
 }

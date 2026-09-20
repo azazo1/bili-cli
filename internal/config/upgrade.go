@@ -75,6 +75,10 @@ func setKnownValues(values map[string]any, config Config) {
 	setTOMLValue(values, []string{"download", "threads"}, config.Download.Threads)
 	setTOMLValue(values, []string{"safety", "read_only"}, config.Safety.ReadOnly)
 	setTOMLValue(values, []string{"safety", "confirm_dangerous_actions"}, config.Safety.ConfirmDangerousActions)
+	setTOMLValue(values, []string{"watch", "interval_seconds"}, config.Watch.IntervalSeconds)
+	setTOMLValue(values, []string{"watch", "request_gap_ms"}, config.Watch.RequestGapMs)
+	setTOMLValue(values, []string{"watch", "notify", "webhook"}, config.Watch.Notify.Webhook)
+	setTOMLValue(values, []string{"watch", "notify", "exec"}, config.Watch.Notify.Exec)
 }
 
 func setTOMLValue(values map[string]any, path []string, value any) {

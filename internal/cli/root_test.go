@@ -425,7 +425,7 @@ func TestConfigUpgradeWritesCurrentFormat(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(data)
-	if !strings.Contains(text, "version = 2") || !strings.Contains(text, "threads = 8") || !strings.Contains(text, "read_only = true") {
+	if !strings.Contains(text, "version = 3") || !strings.Contains(text, "threads = 8") || !strings.Contains(text, "read_only = true") || !strings.Contains(text, "interval_seconds = 300") {
 		t.Fatalf("unexpected upgraded config: %s", text)
 	}
 }
@@ -628,6 +628,10 @@ func TestCommandHierarchyUsesDomainParents(t *testing.T) {
 		{"user", "follow"},
 		{"dynamic", "post"},
 		{"dynamic", "delete"},
+		{"watch"},
+		{"watch", "add"},
+		{"watch", "check"},
+		{"watch", "run"},
 	}
 	for _, args := range cases {
 		command, _, err := root.Find(args)

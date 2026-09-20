@@ -12,6 +12,10 @@ func migrate(config Config, sourceVersion int) (Config, bool, error) {
 		config = mergeMigrationDefaults(config)
 		config.Version = CurrentVersion
 		return config, true, nil
+	case sourceVersion == 2:
+		config = mergeMigrationDefaults(config)
+		config.Version = CurrentVersion
+		return config, true, nil
 	case sourceVersion == CurrentVersion:
 		return config, false, nil
 	case sourceVersion > CurrentVersion:
@@ -31,6 +35,9 @@ func mergeMigrationDefaults(config Config) Config {
 	}
 	if config.Download.Threads == 0 {
 		config.Download.Threads = defaults.Download.Threads
+	}
+	if config.Watch.IntervalSeconds == 0 {
+		config.Watch.IntervalSeconds = defaults.Watch.IntervalSeconds
 	}
 	return config
 }

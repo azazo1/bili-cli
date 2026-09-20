@@ -46,6 +46,10 @@ var knownStatusFields = []statusField{
 	{path: "safety.confirm_dangerous_actions", value: func(config Config) any {
 		return config.Safety.ConfirmDangerousActions
 	}},
+	{path: "watch.interval_seconds", value: func(config Config) any { return config.Watch.IntervalSeconds }},
+	{path: "watch.request_gap_ms", value: func(config Config) any { return config.Watch.RequestGapMs }},
+	{path: "watch.notify.webhook", value: func(config Config) any { return config.Watch.Notify.Webhook }},
+	{path: "watch.notify.exec", value: func(config Config) any { return config.Watch.Notify.Exec }},
 }
 
 func (s *Store) Status() StatusReport {

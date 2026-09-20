@@ -1,5 +1,5 @@
 # Bilibili CLI settings.
-version = 2
+version = 3
 
 [output]
 # auto, rich, json, or yaml.
@@ -17,3 +17,15 @@ threads = 8
 read_only = false
 # Ask before deleting a dynamic or unfollowing an account.
 confirm_dangerous_actions = true
+
+[watch]
+# 常驻轮询间隔, 单位秒.
+interval_seconds = 300
+# 规则之间的请求间隔, 单位毫秒.
+request_gap_ms = 400
+
+[watch.notify]
+# 事件 JSON POST 地址, 留空表示关闭.
+webhook = ""
+# 每条事件执行的命令, 留空表示关闭.
+exec = ""

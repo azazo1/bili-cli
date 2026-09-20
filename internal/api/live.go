@@ -9,13 +9,22 @@ import (
 )
 
 type LiveStream struct {
-	RoomID      string
-	Title       string
-	LiveStatus  int
-	Protocol    string
-	Format      string
-	Codec       string
-	URL         string
+	RoomID     string
+	Title      string
+	LiveStatus int
+	Protocol   string
+	Format     string
+	Codec      string
+	URL        string
+}
+
+type LiveRoomInfo struct {
+	RoomID     string
+	UID        int64
+	Title      string
+	Cover      string
+	LiveStatus int
+	UName      string
 }
 
 func ExtractLiveRoomID(value string) (string, error) {
@@ -49,6 +58,40 @@ func positiveNumber(value string) (string, bool) {
 		return "", false
 	}
 	return strconv.FormatInt(parsed, 10), true
+}
+
+func (c *Client) GetLiveRoomInfo(ctx context.Context, roomID string, cred *Credential) (LiveRoomInfo, error) {
+	if _, ok := positiveNumber(roomID); !ok {
+		return LiveRoomInfo{}, NewError(CodeInvalidInput, "获取直播间信息", "直播间 ID 必须是正整数")
+	}
+	query := url.Values{"room_id": []string{roomID}}
+	var data map[string]any
+	if err := c.requestAtBase(ctx, "GET", c.LiveBaseURL, defaultLiveBaseURL, "/xlive/web-room/v1/index/getH5InfoByRoom", query, nil, cred, &data); err != nil {
+		return LiveRoomInfo{}, withAction("获取直播间信息", err)
+	}
+	return liveRoomInfoFromData(data, roomID), nil
+}
+
+func liveRoomInfoFromData(data map[string]any, fallbackRoomID string) LiveRoomInfo {
+	room := mapValue(data["room_info"])
+	if len(room) == 0 {
+		room = data
+	}
+	anchor := mapValue(mapValue(data["anchor_info"])["base_info"])
+	info := LiveRoomInfo{
+		UID:        int64Value(room["uid"], 0),
+		Title:      stringValue(room["title"]),
+		Cover:      stringValue(room["cover"]),
+		LiveStatus: intValue(room["live_status"], intValue(room["liveStatus"], 0)),
+		UName:      stringValue(anchor["uname"]),
+	}
+	roomID := int64Value(room["room_id"], int64Value(room["roomid"], 0))
+	if roomID > 0 {
+		info.RoomID = strconv.FormatInt(roomID, 10)
+	} else if fallbackRoomID != "" {
+		info.RoomID = fallbackRoomID
+	}
+	return info
 }
 
 func (c *Client) GetLiveStream(ctx context.Context, roomID string, quality int, preferredFormat string, cred *Credential) (LiveStream, error) {
