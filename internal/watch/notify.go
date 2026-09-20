@@ -108,7 +108,11 @@ func (n Notifier) runExec(ctx context.Context, command string, event Event) erro
 	)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		n.logger().Warn("订阅命令执行失败", "error", err, "output", strings.TrimSpace(string(output)))
+		text := strings.TrimSpace(string(output))
+		n.logger().Warn("订阅命令执行失败", "error", err, "output", text)
+		if text != "" {
+			return fmt.Errorf("%w: %s", err, text)
+		}
 		return err
 	}
 	return nil
