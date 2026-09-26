@@ -33,11 +33,14 @@ type rangeProbe struct {
 	response    *http.Response
 }
 
+const progressEmitInterval = 100 * time.Millisecond
+
 type progressReporter struct {
 	callback ProgressFunc
 	total    int64
 	written  int64
 	mu       sync.Mutex
+	lastEmit time.Time
 }
 
 func newProgressReporter(callback ProgressFunc, total int64) *progressReporter {
@@ -48,18 +51,30 @@ func newProgressReporter(callback ProgressFunc, total int64) *progressReporter {
 	return reporter
 }
 
-func (r *progressReporter) add(written int64) int64 {
-	if r == nil || written <= 0 {
-		return 0
+func (r *progressReporter) add(delta int64) int64 {
+	if r == nil || delta == 0 {
+		if r == nil {
+			return 0
+		}
+		return atomic.LoadInt64(&r.written)
 	}
-	total := atomic.AddInt64(&r.written, written)
-	if r.callback == nil {
-		return total
+	updated := atomic.AddInt64(&r.written, delta)
+	r.emit(delta < 0)
+	return updated
+}
+
+func (r *progressReporter) emit(force bool) {
+	if r == nil || r.callback == nil {
+		return
 	}
 	r.mu.Lock()
-	r.callback(DownloadProgress{Written: total, Total: r.total})
-	r.mu.Unlock()
-	return total
+	defer r.mu.Unlock()
+	now := time.Now()
+	if !force && !r.lastEmit.IsZero() && now.Sub(r.lastEmit) < progressEmitInterval {
+		return
+	}
+	r.lastEmit = now
+	r.callback(DownloadProgress{Written: atomic.LoadInt64(&r.written), Total: r.total})
 }
 
 func (r *progressReporter) finish() {
@@ -136,7 +151,7 @@ func downloadOnceParallel(ctx context.Context, mediaURL, outputPath string, logg
 				if workContext.Err() != nil {
 					return
 				}
-				if err := downloadRangeWithRetry(workContext, mediaURL, file, item, logger, label); err != nil {
+				if err := downloadRangeWithRetry(workContext, mediaURL, file, item, reporter, logger, label); err != nil {
 					errorMu.Lock()
 					if firstErr == nil {
 						firstErr = err
@@ -145,8 +160,7 @@ func downloadOnceParallel(ctx context.Context, mediaURL, outputPath string, logg
 					errorMu.Unlock()
 					return
 				}
-				completed := reporter.add(item.end - item.start + 1)
-				logger.Info(label+"分段下载进度", "bytes", completed, "total", probe.total)
+				logger.Info(label+"分段下载进度", "bytes", atomic.LoadInt64(&reporter.written), "total", probe.total)
 			}
 		}()
 	}
@@ -249,7 +263,7 @@ func splitDownloadRanges(total int64, threads int) []downloadRange {
 	return ranges
 }
 
-func downloadRangeWithRetry(ctx context.Context, mediaURL string, file *os.File, item downloadRange, logger *slog.Logger, label string) error {
+func downloadRangeWithRetry(ctx context.Context, mediaURL string, file *os.File, item downloadRange, reporter *progressReporter, logger *slog.Logger, label string) error {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -258,27 +272,36 @@ func downloadRangeWithRetry(ctx context.Context, mediaURL string, file *os.File,
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if err := downloadRangeOnce(ctx, mediaURL, file, item); err == nil {
-			return nil
-		} else {
-			lastErr = err
-			if errors.Is(err, errRangeUnsupported) {
-				return err
+		var credited int64
+		err := downloadRangeOnce(ctx, mediaURL, file, item, func(n int64) {
+			credited += n
+			if reporter != nil {
+				reporter.add(n)
 			}
-			if attempt < rangeDownloadRetries {
-				logger.Warn(label+"分段下载失败, 准备重试", "start", item.start, "end", item.end, "attempt", attempt, "error", err)
-				select {
-				case <-ctx.Done():
-					return ctx.Err()
-				case <-time.After(200 * time.Millisecond):
-				}
+		})
+		if err == nil {
+			return nil
+		}
+		if credited != 0 && reporter != nil {
+			reporter.add(-credited)
+		}
+		lastErr = err
+		if errors.Is(err, errRangeUnsupported) {
+			return err
+		}
+		if attempt < rangeDownloadRetries {
+			logger.Warn(label+"分段下载失败, 准备重试", "start", item.start, "end", item.end, "attempt", attempt, "error", err)
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(200 * time.Millisecond):
 			}
 		}
 	}
 	return lastErr
 }
 
-func downloadRangeOnce(ctx context.Context, mediaURL string, file *os.File, item downloadRange) error {
+func downloadRangeOnce(ctx context.Context, mediaURL string, file *os.File, item downloadRange, onBytes func(int64)) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, mediaURL, nil)
 	if err != nil {
 		return err
@@ -315,6 +338,9 @@ func downloadRangeOnce(ctx context.Context, mediaURL string, file *os.File, item
 				return io.ErrShortWrite
 			}
 			written += int64(count)
+			if onBytes != nil && count > 0 {
+				onBytes(int64(count))
+			}
 		}
 		if readErr == io.EOF {
 			break

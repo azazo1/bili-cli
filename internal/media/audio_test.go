@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -81,6 +82,91 @@ func TestDownloadFileWithThreadsUsesHTTPRanges(t *testing.T) {
 	}
 	if atomic.LoadInt32(&maximum) < 2 {
 		t.Fatalf("range requests were not concurrent: maximum=%d", maximum)
+	}
+}
+
+func TestParallelDownloadReportsProgressBeforeRangeCompletes(t *testing.T) {
+	content := bytes.Repeat([]byte("0123456789"), 200)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unlock := func() { releaseOnce.Do(func() { close(release) }) }
+	defer unlock()
+	started := make(chan struct{})
+	var startedOnce sync.Once
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start, end := 0, len(content)-1
+		if value := r.Header.Get("Range"); value != "" {
+			if _, err := fmt.Sscanf(value, "bytes=%d-%d", &start, &end); err != nil {
+				http.Error(w, "invalid range", http.StatusBadRequest)
+				return
+			}
+			w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, len(content)))
+			w.WriteHeader(http.StatusPartialContent)
+		}
+		if end == start {
+			_, _ = w.Write(content[start : end+1])
+			return
+		}
+		payload := content[start : end+1]
+		head := len(payload) / 5
+		if head < 1 {
+			head = 1
+		}
+		_, _ = w.Write(payload[:head])
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		startedOnce.Do(func() { close(started) })
+		select {
+		case <-release:
+		case <-r.Context().Done():
+			return
+		}
+		_, _ = w.Write(payload[head:])
+	}))
+	defer server.Close()
+
+	path := filepath.Join(t.TempDir(), "media.bin")
+	var sawPartial atomic.Bool
+	done := make(chan error, 1)
+	go func() {
+		_, err := DownloadFileWithProgressAndThreads(context.Background(), server.URL, path, nil, func(progress DownloadProgress) {
+			if progress.Total > 0 && progress.Written > 0 && progress.Written < progress.Total {
+				sawPartial.Store(true)
+			}
+		}, 4)
+		done <- err
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("range download did not start")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for !sawPartial.Load() && time.Now().Before(deadline) {
+		select {
+		case err := <-done:
+			t.Fatalf("download finished before partial progress: %v", err)
+		default:
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	if !sawPartial.Load() {
+		t.Fatal("progress stayed at 0 while range data was already written")
+	}
+	unlock()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("download did not finish")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(data, content) {
+		t.Fatalf("unexpected ranged download: %d bytes, %v", len(data), err)
 	}
 }
 
