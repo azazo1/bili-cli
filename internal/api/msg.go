@@ -96,7 +96,7 @@ func (c *Client) GetSessionList(ctx context.Context, endTS int64, cred *Credenti
 	return result, nil
 }
 
-func (c *Client) GetSessionMessages(ctx context.Context, talkerID int64, size int, cred *Credential) (map[string]any, error) {
+func (c *Client) GetSessionMessages(ctx context.Context, talkerID int64, size int, endSeqno int64, cred *Credential) (map[string]any, error) {
 	if err := requireCredential("获取私信", cred, false); err != nil {
 		return nil, err
 	}
@@ -106,6 +106,9 @@ func (c *Client) GetSessionMessages(ctx context.Context, talkerID int64, size in
 	if size <= 0 {
 		size = 20
 	}
+	if endSeqno < 0 {
+		return nil, NewError(CodeInvalidInput, "获取私信", "end_seqno 无效")
+	}
 	query := url.Values{}
 	query.Set("talker_id", strconv.FormatInt(talkerID, 10))
 	query.Set("session_type", "1")
@@ -113,6 +116,10 @@ func (c *Client) GetSessionMessages(ctx context.Context, talkerID int64, size in
 	query.Set("sender_device_id", "1")
 	query.Set("build", "0")
 	query.Set("mobi_app", "web")
+	if endSeqno > 0 {
+		query.Set("begin_seqno", "0")
+		query.Set("end_seqno", strconv.FormatInt(endSeqno, 10))
+	}
 	signed, err := c.signWBI(ctx, query, cred)
 	if err != nil {
 		return nil, withAction("获取私信", err)

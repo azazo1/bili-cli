@@ -134,13 +134,14 @@ bili msg
 bili msg unread
 bili msg show 123
 bili msg show 123 9
+bili msg show 123 --before 9
 bili msg show 123 --json
 bili msg send 123 "hello"
 bili msg ack 123
 bili msg rm 123 --yes
 ```
 
-`bili msg` 默认列出一对一会话. `show` / `send` / `ack` / `rm` 的对象与 `bili user` 相同, 接受 UID, 用户名, 空间链接或 b23 短链. `show` 默认不标记已读, `--ack` 才会把本页最大 seqno 标为已读. 列表会带 seqno, `show REF SEQ` 只展开那一条. `--json` / `--yaml` 会带解码后的 `content` 以及图片链接, 视频 BV 号, 封面, 专栏 cv 号等 `detail`. 发送纯文本可用位置参数或 `--from-file`.
+`bili msg` 默认列出一对一会话. `show` / `send` / `ack` / `rm` 的对象与 `bili user` 相同, 接受 UID, 用户名, 空间链接或 b23 短链. `show` 默认不标记已读, `--ack` 才会把本页最大 seqno 标为已读. 列表会带 seqno, `show REF SEQ` 只展开那一条. 更早的消息用 `--before 本页最小 seqno` 继续往上翻, 不能和 `--ack` 一起用. `--json` / `--yaml` 会带解码后的 `content` 以及图片链接, 视频 BV 号, 封面, 专栏 cv 号等 `detail`. 发送纯文本可用位置参数或 `--from-file`.
 
 配置和认证默认保存在 `~/.config/bilibili-cli/config.toml` 与 `~/.config/bilibili-cli/auth.json`. 订阅规则保存在同目录的 `watch.json`. 如需从已有 cookie 导入, 可以传入 `BILI_COOKIE` 或 Netscape cookie 文件路径 `BILI_COOKIE_FILE`.
 

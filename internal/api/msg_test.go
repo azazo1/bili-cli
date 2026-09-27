@@ -69,7 +69,7 @@ func TestGetSessionMessagesSignsTalker(t *testing.T) {
 		case "/x/web-interface/nav":
 			writeMsgWBI(w)
 		case "/svr_sync/v1/svr_sync/fetch_session_msgs":
-			if r.URL.Query().Get("talker_id") != "42" || r.URL.Query().Get("w_rid") == "" {
+			if r.URL.Query().Get("talker_id") != "42" || r.URL.Query().Get("w_rid") == "" || r.URL.Query().Get("end_seqno") != "" {
 				t.Fatalf("unexpected messages query: %s", r.URL.RawQuery)
 			}
 			fmt.Fprint(w, `{"code":0,"data":{"has_more":0,"max_seqno":9,"messages":[{"msg_seqno":9,"sender_uid":42,"receiver_id":100,"msg_type":1,"content":"{\"content\":\"hi\"}","timestamp":1700000000}]}}`)
@@ -79,8 +79,30 @@ func TestGetSessionMessagesSignsTalker(t *testing.T) {
 	}))
 	defer server.Close()
 	client := newMsgTestClient(server)
-	result, err := client.GetSessionMessages(context.Background(), 42, 20, msgTestCredential())
+	result, err := client.GetSessionMessages(context.Background(), 42, 20, 0, msgTestCredential())
 	if err != nil || len(mapList(result["messages"])) != 1 {
+		t.Fatalf("GetSessionMessages() = %#v, %v", result, err)
+	}
+}
+
+func TestGetSessionMessagesUsesEndSeqno(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/x/web-interface/nav":
+			writeMsgWBI(w)
+		case "/svr_sync/v1/svr_sync/fetch_session_msgs":
+			if r.URL.Query().Get("end_seqno") != "9" || r.URL.Query().Get("begin_seqno") != "0" {
+				t.Fatalf("unexpected history query: %s", r.URL.RawQuery)
+			}
+			fmt.Fprint(w, `{"code":0,"data":{"has_more":1,"min_seqno":1,"max_seqno":8,"messages":[{"msg_seqno":8,"sender_uid":42,"msg_type":1,"content":"{\"content\":\"old\"}","timestamp":1700000000}]}}`)
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	client := newMsgTestClient(server)
+	result, err := client.GetSessionMessages(context.Background(), 42, 20, 9, msgTestCredential())
+	if err != nil || !boolValue(result["has_more"]) || int64Value(result["min_seqno"], 0) != 1 {
 		t.Fatalf("GetSessionMessages() = %#v, %v", result, err)
 	}
 }

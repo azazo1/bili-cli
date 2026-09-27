@@ -150,6 +150,7 @@ func newMsgUnreadCommand(app *App) *cobra.Command {
 
 func newMsgShowCommand(app *App) *cobra.Command {
 	var maxItems int
+	var before int64
 	var ack bool
 	var asJSON, asYAML bool
 	command := &cobra.Command{
@@ -163,6 +164,12 @@ func newMsgShowCommand(app *App) *cobra.Command {
 			}
 			if maxItems < 1 {
 				return app.invalidInput(cmd, "--max 必须大于 0", mode)
+			}
+			if before < 0 {
+				return app.invalidInput(cmd, "--before 不能为负数", mode)
+			}
+			if before > 0 && ack {
+				return app.invalidInput(cmd, "--ack 不能和 --before 一起使用", mode)
 			}
 			access := AccessRead
 			if ack {
@@ -185,7 +192,7 @@ func newMsgShowCommand(app *App) *cobra.Command {
 				seq = parsed
 			}
 			ctx := contextOrBackground(cmd.Context())
-			data, fetchErr := app.API.GetSessionMessages(ctx, uid, maxItems, credential)
+			data, fetchErr := app.API.GetSessionMessages(ctx, uid, maxItems, before, credential)
 			if fetchErr != nil {
 				return app.apiFailure(fetchErr, "获取私信失败", mode)
 			}
@@ -225,7 +232,7 @@ func newMsgShowCommand(app *App) *cobra.Command {
 					}
 				}
 				if found == nil {
-					return app.Fail(api.NewError(api.CodeNotFound, "", fmt.Sprintf("未找到 seqno=%d. 可加大 --max 后重试", seq)), "", mode)
+					return app.Fail(api.NewError(api.CodeNotFound, "", fmt.Sprintf("未找到 seqno=%d. 可加大 --max 或使用 --before", seq)), "", mode)
 				}
 				payload := map[string]any{
 					"talker_id": uid,
@@ -236,10 +243,20 @@ func newMsgShowCommand(app *App) *cobra.Command {
 					renderExpandedMessage(w, found, selfID)
 				})
 			}
+			minSeqno := int64Value(data["min_seqno"], 0)
+			if minSeqno == 0 {
+				for _, item := range items {
+					if seqno := int64Value(item["seqno"], 0); seqno > 0 && (minSeqno == 0 || seqno < minSeqno) {
+						minSeqno = seqno
+					}
+				}
+			}
 			payload := map[string]any{
 				"talker_id": uid,
 				"items":     items,
 				"has_more":  boolValue(data["has_more"]),
+				"min_seqno": minSeqno,
+				"max_seqno": int64Value(data["max_seqno"], 0),
 				"acked":     ack,
 			}
 			return app.Complete(payload, mode, func(w io.Writer) {
@@ -250,10 +267,14 @@ func newMsgShowCommand(app *App) *cobra.Command {
 				for _, item := range items {
 					fmt.Fprintf(w, "%s  %s  %s  %s\n", stringValue(item["seqno"]), displayOrDash(stringValue(item["timestamp"])), senderLabel(int64Value(item["sender_id"], 0), selfID), displayOrDash(stringValue(item["text"])))
 				}
+				if boolValue(data["has_more"]) && minSeqno > 0 {
+					fmt.Fprintf(w, "还有更早的消息, 使用 bili msg show %d --before %d\n", uid, minSeqno)
+				}
 			})
 		},
 	}
 	command.Flags().IntVar(&maxItems, "max", 20, "最多显示消息数")
+	command.Flags().Int64Var(&before, "before", 0, "拉取该 seqno 之前的更早消息")
 	command.Flags().BoolVar(&ack, "ack", false, "查看后标记已读")
 	addStructuredFlags(command, &asJSON, &asYAML)
 	return command
@@ -339,7 +360,7 @@ func newMsgAckCommand(app *App) *cobra.Command {
 			ctx := contextOrBackground(cmd.Context())
 			ackSeqno := seq
 			if ackSeqno == 0 {
-				data, fetchErr := app.API.GetSessionMessages(ctx, uid, 20, credential)
+				data, fetchErr := app.API.GetSessionMessages(ctx, uid, 20, 0, credential)
 				if fetchErr != nil {
 					return app.apiFailure(fetchErr, "获取私信失败", mode)
 				}
