@@ -64,7 +64,7 @@ func TestUpgradeMergesDefaultsAndPreservesValues(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(data)
-	for _, expected := range []string{"version = 3", "threads = 4", "timeout_seconds = 30", "confirm_dangerous_actions = true", "interval_seconds = 300", "value ="} {
+	for _, expected := range []string{"version = 4", "threads = 4", "timeout_seconds = 30", "confirm_dangerous_actions = true", "non_destructive = false", "interval_seconds = 300", "value ="} {
 		if !strings.Contains(text, expected) {
 			t.Fatalf("upgraded config missing %q: %s", expected, text)
 		}
@@ -97,7 +97,7 @@ func TestLoadMigratesVersionZeroAndKeepsReadOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.Version != CurrentVersion || !config.Safety.ReadOnly || !config.Safety.ConfirmDangerousActions {
+	if config.Version != CurrentVersion || !config.Safety.ReadOnly || config.Safety.NonDestructive || !config.Safety.ConfirmDangerousActions {
 		t.Fatalf("migration lost safety settings: %#v", config)
 	}
 }
@@ -120,7 +120,7 @@ func TestStatusReportsMissingAndSetFields(t *testing.T) {
 	if report.Status != "missing" || report.Exists || report.Loaded || !report.NeedsUpgrade {
 		t.Fatalf("unexpected missing status: %#v", report)
 	}
-	if report.EffectiveVersion != CurrentVersion || len(report.Fields) != 10 {
+	if report.EffectiveVersion != CurrentVersion || len(report.Fields) != 11 {
 		t.Fatalf("unexpected missing status details: %#v", report)
 	}
 	if err := os.WriteFile(store.File, []byte("version = 2\n[download]\nthreads = 4\n"), 0o600); err != nil {

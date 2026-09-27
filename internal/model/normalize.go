@@ -429,6 +429,132 @@ func firstValue(values ...any) any {
 
 func firstString(values ...any) string { return String(firstValue(values...)) }
 
+func NormalizeSession(item map[string]any) map[string]any {
+	last := Map(item["last_msg"])
+	msgType := ToInt(last["msg_type"], 0)
+	revoked := ToInt(last["msg_status"], 0) == 1 || msgType == 5
+	kind, text := MessageSummary(msgType, last["content"], revoked)
+	timestamp := normalizeUnix(ToInt64(firstValue(last["timestamp"], item["session_ts"]), 0))
+	return map[string]any{
+		"talker_id": ToInt64(item["talker_id"], 0),
+		"name":      firstString(item["name"], item["uname"]),
+		"unread":    ToInt(item["unread_count"], 0),
+		"is_follow": ToInt(item["is_follow"], 0) != 0,
+		"timestamp": timestampISO(timestamp),
+		"last_text": text,
+		"last_type": kind,
+	}
+}
+
+func NormalizeMessage(item map[string]any) map[string]any {
+	msgType := ToInt(item["msg_type"], 0)
+	revoked := ToInt(item["msg_status"], 0) == 1 || msgType == 5
+	kind, text := MessageSummary(msgType, item["content"], revoked)
+	return map[string]any{
+		"seqno":       ToInt64(item["msg_seqno"], 0),
+		"key":         String(item["msg_key"]),
+		"sender_id":   ToInt64(item["sender_uid"], 0),
+		"receiver_id": ToInt64(item["receiver_id"], 0),
+		"msg_type":    msgType,
+		"type":        kind,
+		"text":        text,
+		"timestamp":   timestampISO(normalizeUnix(ToInt64(item["timestamp"], 0))),
+		"revoked":     revoked,
+	}
+}
+
+func NormalizeUnread(item map[string]any) map[string]any {
+	follow := ToInt(item["follow_unread"], 0)
+	unfollow := ToInt(item["unfollow_unread"], 0)
+	return map[string]any{
+		"follow_unread":   follow,
+		"unfollow_unread": unfollow,
+		"total":           follow + unfollow,
+	}
+}
+
+func MessageSummary(msgType int, content any, revoked bool) (string, string) {
+	if revoked || msgType == 5 {
+		return "revoke", "[已撤回]"
+	}
+	decoded := DecodeJSON(content)
+	switch msgType {
+	case 1:
+		return "text", strings.TrimSpace(firstString(decoded["content"], content))
+	case 2, 6:
+		imageURL := firstString(decoded["url"], decoded["original"], decoded["imageUrl"])
+		if imageURL == "" {
+			return "image", "[图片]"
+		}
+		return "image", "[图片] " + imageURL
+	case 7, 14:
+		title := firstString(decoded["title"], decoded["source"])
+		if title == "" {
+			return "other", "[分享]"
+		}
+		return "other", "[分享] " + title
+	case 10:
+		text := strings.TrimSpace(firstString(decoded["content"], decoded["title"]))
+		if text == "" {
+			return "tip", "[通知]"
+		}
+		return "tip", text
+	case 11:
+		title := firstString(decoded["title"], decoded["bvid"])
+		if title == "" {
+			return "video", "[视频]"
+		}
+		return "video", "[视频] " + title
+	case 12:
+		title := firstString(decoded["title"], String(decoded["rid"]))
+		if title == "" {
+			return "article", "[专栏]"
+		}
+		return "article", "[专栏] " + title
+	case 13:
+		return "image", "[图片卡片]"
+	case 18:
+		parts := make([]string, 0)
+		for _, item := range List(decoded["content"]) {
+			if mapped, ok := item.(map[string]any); ok {
+				if text := strings.TrimSpace(String(mapped["text"])); text != "" {
+					parts = append(parts, text)
+				}
+				continue
+			}
+			if text := strings.TrimSpace(String(item)); text != "" {
+				parts = append(parts, text)
+			}
+		}
+		if text := strings.Join(parts, ""); text != "" {
+			return "tip", text
+		}
+		if text := strings.TrimSpace(String(decoded["content"])); text != "" {
+			return "tip", text
+		}
+		return "tip", "[提示]"
+	default:
+		raw := strings.TrimSpace(String(content))
+		if runes := []rune(raw); len(runes) > 80 {
+			raw = string(runes[:80]) + "..."
+		}
+		if raw == "" {
+			return "other", fmt.Sprintf("[类型%d]", msgType)
+		}
+		return "other", fmt.Sprintf("[类型%d] %s", msgType, raw)
+	}
+}
+
+func normalizeUnix(value int64) int64 {
+	if value <= 0 {
+		return 0
+	}
+	for value > 9999999999 {
+		value /= 1000
+	}
+	return value
+}
+
 func parseClock(value string) int {
 	parts := strings.Split(value, ":")
 	if len(parts) == 0 {

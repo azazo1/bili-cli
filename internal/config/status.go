@@ -43,6 +43,7 @@ var knownStatusFields = []statusField{
 	{path: "network.timeout_seconds", value: func(config Config) any { return config.Network.TimeoutSeconds }},
 	{path: "download.threads", value: func(config Config) any { return config.Download.Threads }},
 	{path: "safety.read_only", value: func(config Config) any { return config.Safety.ReadOnly }},
+	{path: "safety.non_destructive", value: func(config Config) any { return config.Safety.NonDestructive }},
 	{path: "safety.confirm_dangerous_actions", value: func(config Config) any {
 		return config.Safety.ConfirmDangerousActions
 	}},

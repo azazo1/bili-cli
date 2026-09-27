@@ -40,7 +40,7 @@ func newFavoritesCommand(app *App) *cobra.Command {
 			if page < 1 {
 				return app.invalidInput(cmd, "--page 必须大于 0", mode)
 			}
-			credential, err := app.RequireCredential(contextOrBackground(cmd.Context()), false, mode, "需要登录才能查看收藏夹. 使用 bili me login 登录")
+			credential, err := app.RequireCredential(contextOrBackground(cmd.Context()), AccessRead, mode, "需要登录才能查看收藏夹. 使用 bili me login 登录")
 			if err != nil {
 				return err
 			}
@@ -117,7 +117,7 @@ func newFollowingCommand(app *App) *cobra.Command {
 			if page < 1 {
 				return app.invalidInput(cmd, "--page 必须大于 0", mode)
 			}
-			credential, err := app.RequireCredential(contextOrBackground(cmd.Context()), false, mode, "需要登录才能查看关注列表")
+			credential, err := app.RequireCredential(contextOrBackground(cmd.Context()), AccessRead, mode, "需要登录才能查看关注列表")
 			if err != nil {
 				return err
 			}
@@ -166,7 +166,7 @@ func newHistoryCommand(app *App) *cobra.Command {
 			if page < 1 || count < 1 || count > 100 {
 				return app.invalidInput(cmd, "--page 必须大于 0, --max 范围为 1-100", mode)
 			}
-			credential, err := app.RequireCredential(contextOrBackground(cmd.Context()), false, mode, "需要登录才能查看观看历史")
+			credential, err := app.RequireCredential(contextOrBackground(cmd.Context()), AccessRead, mode, "需要登录才能查看观看历史")
 			if err != nil {
 				return err
 			}
@@ -222,7 +222,7 @@ func newWatchLaterCommand(app *App) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			credential, err := app.RequireCredential(contextOrBackground(cmd.Context()), false, mode, "需要登录才能查看稍后再看")
+			credential, err := app.RequireCredential(contextOrBackground(cmd.Context()), AccessRead, mode, "需要登录才能查看稍后再看")
 			if err != nil {
 				return err
 			}
@@ -272,7 +272,7 @@ func newFeedCommand(app *App) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			credential, err := app.RequireCredential(contextOrBackground(cmd.Context()), false, mode, "需要登录才能查看动态")
+			credential, err := app.RequireCredential(contextOrBackground(cmd.Context()), AccessRead, mode, "需要登录才能查看动态")
 			if err != nil {
 				return err
 			}
@@ -344,7 +344,7 @@ func newMyDynamicsCommand(app *App) *cobra.Command {
 			if noTop {
 				needTop = false
 			}
-			credential, err := app.RequireCredential(contextOrBackground(cmd.Context()), false, mode, "需要登录才能查看动态")
+			credential, err := app.RequireCredential(contextOrBackground(cmd.Context()), AccessRead, mode, "需要登录才能查看动态")
 			if err != nil {
 				return err
 			}
@@ -406,7 +406,7 @@ func newDynamicPostCommand(app *App) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			credential, err := app.RequireCredential(contextOrBackground(cmd.Context()), true, mode, "未登录. 使用 bili me login 登录")
+			credential, err := app.RequireCredential(contextOrBackground(cmd.Context()), AccessWrite, mode, "未登录. 使用 bili me login 登录")
 			if err != nil {
 				return err
 			}
@@ -461,11 +461,11 @@ func newDynamicDeleteCommand(app *App) *cobra.Command {
 			if parseErr != nil || id <= 0 {
 				return app.invalidInput(cmd, "DYNAMIC_ID 必须是正整数", mode)
 			}
-			credential, err := app.RequireCredential(contextOrBackground(cmd.Context()), true, mode, "未登录. 使用 bili me login 登录")
+			credential, err := app.RequireCredential(contextOrBackground(cmd.Context()), AccessDestructive, mode, "未登录. 使用 bili me login 登录")
 			if err != nil {
 				return err
 			}
-			if !yes && app.ShouldConfirmDangerousAction() && !confirm(app.Out.Stdout, id) {
+			if !yes && app.ShouldConfirmDangerousAction() && !confirm(app.Out.Stdout, app.In, fmt.Sprintf("确认删除动态 %d 吗?", id)) {
 				return nil
 			}
 			if fetchErr := app.API.DeleteDynamic(contextOrBackground(cmd.Context()), id, credential); fetchErr != nil {
@@ -518,9 +518,12 @@ func firstNonNil(values ...any) any {
 	return nil
 }
 
-func confirm(w io.Writer, id int64) bool {
-	fmt.Fprintf(w, "确认删除动态 %d 吗? [y/N] ", id)
-	reader := bufio.NewReader(os.Stdin)
+func confirm(w io.Writer, in io.Reader, prompt string) bool {
+	if in == nil {
+		in = os.Stdin
+	}
+	fmt.Fprintf(w, "%s [y/N] ", prompt)
+	reader := bufio.NewReader(in)
 	line, _ := reader.ReadString('\n')
 	answer := strings.TrimSpace(strings.ToLower(line))
 	return answer == "y" || answer == "yes"

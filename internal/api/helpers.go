@@ -90,6 +90,9 @@ func boolValue(value any) bool {
 }
 
 func mapList(value any) []map[string]any {
+	if direct, ok := value.([]map[string]any); ok {
+		return direct
+	}
 	items := listValue(value)
 	result := make([]map[string]any, 0, len(items))
 	for _, item := range items {

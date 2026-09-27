@@ -10,10 +10,10 @@ import (
 	"github.com/pelletier/go-toml/v2"
 )
 
-const CurrentVersion = 3
+const CurrentVersion = 4
 
 const DefaultTOML = `# Bilibili CLI settings.
-version = 3
+version = 4
 
 [output]
 # auto, rich, json, or yaml.
@@ -29,6 +29,8 @@ threads = 8
 [safety]
 # Block account write actions and dangerous operations.
 read_only = false
+# 禁止破坏性写操作, 例如取关, 删除动态, 删除私信会话.
+non_destructive = false
 # Ask before deleting a dynamic or unfollowing an account.
 confirm_dangerous_actions = true
 
@@ -68,6 +70,7 @@ type DownloadConfig struct {
 
 type SafetyConfig struct {
 	ReadOnly                bool `toml:"read_only" json:"read_only" yaml:"read_only"`
+	NonDestructive          bool `toml:"non_destructive" json:"non_destructive" yaml:"non_destructive"`
 	ConfirmDangerousActions bool `toml:"confirm_dangerous_actions" json:"confirm_dangerous_actions" yaml:"confirm_dangerous_actions"`
 }
 
@@ -96,6 +99,7 @@ func Default() Config {
 		},
 		Safety: SafetyConfig{
 			ReadOnly:                false,
+			NonDestructive:          false,
 			ConfirmDangerousActions: true,
 		},
 		Watch: WatchConfig{

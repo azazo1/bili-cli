@@ -120,7 +120,7 @@ func newWhoamiCommand(app *App) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			credential, err := app.RequireCredential(contextOrBackground(cmd.Context()), false, mode, "未登录. 使用 bili me login 登录")
+			credential, err := app.RequireCredential(contextOrBackground(cmd.Context()), AccessRead, mode, "未登录. 使用 bili me login 登录")
 			if err != nil {
 				return err
 			}

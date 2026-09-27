@@ -16,6 +16,10 @@ func migrate(config Config, sourceVersion int) (Config, bool, error) {
 		config = mergeMigrationDefaults(config)
 		config.Version = CurrentVersion
 		return config, true, nil
+	case sourceVersion == 3:
+		config = mergeMigrationDefaults(config)
+		config.Version = CurrentVersion
+		return config, true, nil
 	case sourceVersion == CurrentVersion:
 		return config, false, nil
 	case sourceVersion > CurrentVersion:

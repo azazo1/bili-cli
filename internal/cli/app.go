@@ -131,9 +131,23 @@ func (a *App) Execute(ctx context.Context) error {
 	return a.failUsage(command, err)
 }
 
-func (a *App) RequireCredential(ctx context.Context, write bool, mode output.Mode, message string) (*api.Credential, error) {
+type Access int
+
+const (
+	AccessRead Access = iota
+	AccessWrite
+	AccessDestructive
+)
+
+func (a *App) RequireCredential(ctx context.Context, access Access, mode output.Mode, message string) (*api.Credential, error) {
+	write := access == AccessWrite || access == AccessDestructive
 	if write {
 		if err := a.RequireWritable(mode, "账户写操作"); err != nil {
+			return nil, err
+		}
+	}
+	if access == AccessDestructive {
+		if err := a.RequireNonDestructive(mode, "破坏性操作"); err != nil {
 			return nil, err
 		}
 	}
@@ -176,6 +190,13 @@ func (a *App) RequireWritable(mode output.Mode, action string) error {
 		return nil
 	}
 	return a.Fail(api.NewError(api.CodePermissionDenied, "", "只读模式已启用, 禁止 "+action), "", mode)
+}
+
+func (a *App) RequireNonDestructive(mode output.Mode, action string) error {
+	if !a.Config.Safety.NonDestructive {
+		return nil
+	}
+	return a.Fail(api.NewError(api.CodePermissionDenied, "", "非破坏模式已启用, 禁止 "+action), "", mode)
 }
 
 func (a *App) ShouldConfirmDangerousAction() bool {

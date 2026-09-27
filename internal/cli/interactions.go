@@ -40,7 +40,7 @@ func newFollowCommand(app *App) *cobra.Command {
 			if parseErr != nil || uid <= 0 {
 				return app.invalidInput(cmd, "UID 必须是正整数", mode)
 			}
-			credential, err := app.RequireCredential(contextOrBackground(cmd.Context()), true, mode, "未登录. 使用 bili me login 登录")
+			credential, err := app.RequireCredential(contextOrBackground(cmd.Context()), AccessWrite, mode, "未登录. 使用 bili me login 登录")
 			if err != nil {
 				return err
 			}
@@ -66,7 +66,7 @@ func newLikeCommand(app *App) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			credential, err := app.RequireCredential(contextOrBackground(cmd.Context()), true, mode, "未登录. 使用 bili me login 登录")
+			credential, err := app.RequireCredential(contextOrBackground(cmd.Context()), AccessWrite, mode, "未登录. 使用 bili me login 登录")
 			if err != nil {
 				return err
 			}
@@ -111,7 +111,7 @@ func newCoinCommand(app *App) *cobra.Command {
 			if coins < 1 || coins > 2 {
 				return app.invalidInput(cmd, "--num 必须是 1 或 2", mode)
 			}
-			credential, err := app.RequireCredential(contextOrBackground(cmd.Context()), true, mode, "未登录. 使用 bili me login 登录")
+			credential, err := app.RequireCredential(contextOrBackground(cmd.Context()), AccessWrite, mode, "未登录. 使用 bili me login 登录")
 			if err != nil {
 				return err
 			}
@@ -142,7 +142,7 @@ func newTripleCommand(app *App) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			credential, err := app.RequireCredential(contextOrBackground(cmd.Context()), true, mode, "未登录. 使用 bili me login 登录")
+			credential, err := app.RequireCredential(contextOrBackground(cmd.Context()), AccessWrite, mode, "未登录. 使用 bili me login 登录")
 			if err != nil {
 				return err
 			}
@@ -178,11 +178,11 @@ func newUnfollowCommand(app *App) *cobra.Command {
 			if parseErr != nil || uid <= 0 {
 				return app.invalidInput(cmd, "UID 必须是正整数", mode)
 			}
-			credential, err := app.RequireCredential(contextOrBackground(cmd.Context()), true, mode, "未登录. 使用 bili me login 登录")
+			credential, err := app.RequireCredential(contextOrBackground(cmd.Context()), AccessDestructive, mode, "未登录. 使用 bili me login 登录")
 			if err != nil {
 				return err
 			}
-			if !yes && app.ShouldConfirmDangerousAction() && !confirm(app.Out.Stdout, uid) {
+			if !yes && app.ShouldConfirmDangerousAction() && !confirm(app.Out.Stdout, app.In, fmt.Sprintf("确认取消关注 UID=%d 吗?", uid)) {
 				return nil
 			}
 			if fetchErr := app.API.UnfollowUser(contextOrBackground(cmd.Context()), uid, credential); fetchErr != nil {

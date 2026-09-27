@@ -74,6 +74,7 @@ func setKnownValues(values map[string]any, config Config) {
 	setTOMLValue(values, []string{"network", "timeout_seconds"}, config.Network.TimeoutSeconds)
 	setTOMLValue(values, []string{"download", "threads"}, config.Download.Threads)
 	setTOMLValue(values, []string{"safety", "read_only"}, config.Safety.ReadOnly)
+	setTOMLValue(values, []string{"safety", "non_destructive"}, config.Safety.NonDestructive)
 	setTOMLValue(values, []string{"safety", "confirm_dangerous_actions"}, config.Safety.ConfirmDangerousActions)
 	setTOMLValue(values, []string{"watch", "interval_seconds"}, config.Watch.IntervalSeconds)
 	setTOMLValue(values, []string{"watch", "request_gap_ms"}, config.Watch.RequestGapMs)

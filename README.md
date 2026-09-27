@@ -10,6 +10,7 @@
 - 热门视频, 排行榜, 收藏夹, 关注, 历史和稍后再看.
 - 动态时间线, 我的动态, 文字动态发布和删除.
 - 点赞, 投币, 一键三连和取消关注.
+- 私信会话, 未读数, 对话查看, 文本发送, 标已读和删除会话.
 - 保存凭证, QR 登录, JSON/YAML 稳定 envelope 输出.
 - 视频音频流和视频流下载, 支持仅下载音频或视频.
 - 直播流下载, 支持 FLV 和 HLS, 可指定画质并持续录制.
@@ -124,7 +125,20 @@ bili image live 5440 --with-avatar
 
 用户下载头像, 其他对象默认下载封面. `--with-avatar` 会额外下载作者或主播头像. 资源保存为稳定 ID 文件名, 例如 `video-BV1ABcsztEcY-cover.jpg`. 同名文件会直接覆盖. 主图下载成功后, 作者头像不可用只会报告警告而不会删除主图. 可使用 `--json` 或 `--yaml` 输出下载路径, 字节数和警告. 图片下载仅使用读取请求, 在 `safety.read_only = true` 下可用.
 
-其他命令按领域组织在 `bili me`, `bili user`, `bili video` 和 `bili dynamic` 下. 例如 `bili user UID_OR_NAME_OR_URL`, `bili user video UID_OR_NAME_OR_URL`, `bili user lists UID_OR_NAME`, `bili user follow UID`, `bili me fav`, `bili video watch` 和 `bili dynamic post TEXT`. `bili video watch` 仍是稍后再看, 本地轮询订阅使用根命令 `bili watch`.
+其他命令按领域组织在 `bili me`, `bili user`, `bili video`, `bili dynamic` 和 `bili msg` 下. 例如 `bili user UID_OR_NAME_OR_URL`, `bili user video UID_OR_NAME_OR_URL`, `bili user lists UID_OR_NAME`, `bili user follow UID`, `bili me fav`, `bili video watch`, `bili dynamic post TEXT` 和 `bili msg send UID TEXT`. `bili video watch` 仍是稍后再看, 本地轮询订阅使用根命令 `bili watch`.
+
+## 私信
+
+```shell
+bili msg
+bili msg unread
+bili msg show 123
+bili msg send 123 "hello"
+bili msg ack 123
+bili msg rm 123 --yes
+```
+
+`bili msg` 默认列出一对一会话. `show` / `send` / `ack` / `rm` 的对象与 `bili user` 相同, 接受 UID, 用户名, 空间链接或 b23 短链. `show` 默认不标记已读, `--ack` 才会把本页最大 seqno 标为已读. 发送纯文本可用位置参数或 `--from-file`.
 
 配置和认证默认保存在 `~/.config/bilibili-cli/config.toml` 与 `~/.config/bilibili-cli/auth.json`. 订阅规则保存在同目录的 `watch.json`. 如需从已有 cookie 导入, 可以传入 `BILI_COOKIE` 或 Netscape cookie 文件路径 `BILI_COOKIE_FILE`.
 
@@ -141,7 +155,7 @@ bili config upgrade
 `bili config status` 显示配置文件和每个已知字段的 `missing`, `set` 或 `error` 状态, 并列出解析错误. `bili config upgrade` 会将已有配置合并到当前格式, 补齐所有默认值并写回文件.
 
 ```toml
-version = 3
+version = 4
 
 [output]
 format = "auto"
@@ -154,6 +168,7 @@ threads = 8
 
 [safety]
 read_only = false
+non_destructive = false
 confirm_dangerous_actions = true
 
 [watch]
@@ -169,7 +184,7 @@ exec = ""
 
 `download.threads` 控制媒体分段下载的并发线程数, 默认值为 `8`, 可设置为 `1` 到 `128`.
 
-`safety.read_only = true` 会拒绝动态发布和删除, 点赞, 投币, 一键三连, 取关等账户侧写操作. `me login` 和 `me logout` 仍然可用. `confirm_dangerous_actions` 控制删除动态和取关是否需要额外确认.
+`safety.read_only = true` 会拒绝动态发布和删除, 点赞, 投币, 一键三连, 关注和取关, 以及私信发送, 标已读和删除会话等账户侧写操作. `me login` 和 `me logout` 仍然可用. `safety.non_destructive = true` 允许点赞, 投币, 一键三连, 关注, 发动态, 发私信和标已读, 但拒绝取关, 删除动态和删除私信会话. `confirm_dangerous_actions` 控制这些破坏性操作是否需要额外确认.
 
 视频信息, 媒体下载和 `bili watch` 都属于读取操作, 在只读模式下仍然可用.
 

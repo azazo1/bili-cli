@@ -283,6 +283,41 @@ func TestReadOnlyBlocksAccountWriteCommands(t *testing.T) {
 	}
 }
 
+func TestNonDestructiveBlocksUnfollowAndAllowsLike(t *testing.T) {
+	app := newTestApp(t)
+	app.Config.Safety.NonDestructive = true
+	stdout := &bytes.Buffer{}
+	app.Out = &output.Writer{Stdout: stdout, Stderr: &bytes.Buffer{}}
+	root := NewRoot(app)
+	root.SetArgs([]string{"user", "unfollow", "42", "--yes", "--json"})
+	err := root.ExecuteContext(context.Background())
+	var exitErr *ExitError
+	if !errors.As(err, &exitErr) || exitErr.Code != 1 {
+		t.Fatalf("unexpected unfollow error: %v", err)
+	}
+	var payload map[string]any
+	if decodeErr := json.Unmarshal(stdout.Bytes(), &payload); decodeErr != nil {
+		t.Fatal(decodeErr)
+	}
+	if payload["error"].(map[string]any)["code"] != string(api.CodePermissionDenied) {
+		t.Fatalf("unexpected unfollow payload: %#v", payload)
+	}
+
+	stdout.Reset()
+	root = NewRoot(app)
+	root.SetArgs([]string{"video", "like", "BV1ABcsztEcY", "--json"})
+	err = root.ExecuteContext(context.Background())
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("like should fail without login: %v", err)
+	}
+	if decodeErr := json.Unmarshal(stdout.Bytes(), &payload); decodeErr != nil {
+		t.Fatal(decodeErr)
+	}
+	if payload["error"].(map[string]any)["code"] == string(api.CodePermissionDenied) {
+		t.Fatalf("non_destructive should allow like: %#v", payload)
+	}
+}
+
 func TestReadOnlyAllowsLogout(t *testing.T) {
 	app := newTestApp(t)
 	app.Config.Safety.ReadOnly = true
@@ -425,7 +460,7 @@ func TestConfigUpgradeWritesCurrentFormat(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(data)
-	if !strings.Contains(text, "version = 3") || !strings.Contains(text, "threads = 8") || !strings.Contains(text, "read_only = true") || !strings.Contains(text, "interval_seconds = 300") {
+	if !strings.Contains(text, "version = 4") || !strings.Contains(text, "threads = 8") || !strings.Contains(text, "read_only = true") || !strings.Contains(text, "non_destructive = false") || !strings.Contains(text, "interval_seconds = 300") {
 		t.Fatalf("unexpected upgraded config: %s", text)
 	}
 }
