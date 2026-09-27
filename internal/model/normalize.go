@@ -433,9 +433,10 @@ func NormalizeSession(item map[string]any) map[string]any {
 	last := Map(item["last_msg"])
 	msgType := ToInt(last["msg_type"], 0)
 	revoked := ToInt(last["msg_status"], 0) == 1 || msgType == 5
-	kind, text := MessageSummary(msgType, last["content"], revoked)
+	content := decodeMessageContent(last["content"])
+	kind, text := MessageSummary(msgType, content, revoked)
 	timestamp := normalizeUnix(ToInt64(firstValue(last["timestamp"], item["session_ts"]), 0))
-	return map[string]any{
+	result := map[string]any{
 		"talker_id": ToInt64(item["talker_id"], 0),
 		"name":      firstString(item["name"], item["uname"]),
 		"unread":    ToInt(item["unread_count"], 0),
@@ -443,14 +444,20 @@ func NormalizeSession(item map[string]any) map[string]any {
 		"timestamp": timestampISO(timestamp),
 		"last_text": text,
 		"last_type": kind,
+		"content":   content,
 	}
+	if detail := messageDetail(msgType, content); len(detail) > 0 {
+		result["detail"] = detail
+	}
+	return result
 }
 
 func NormalizeMessage(item map[string]any) map[string]any {
 	msgType := ToInt(item["msg_type"], 0)
 	revoked := ToInt(item["msg_status"], 0) == 1 || msgType == 5
-	kind, text := MessageSummary(msgType, item["content"], revoked)
-	return map[string]any{
+	content := decodeMessageContent(item["content"])
+	kind, text := MessageSummary(msgType, content, revoked)
+	result := map[string]any{
 		"seqno":       ToInt64(item["msg_seqno"], 0),
 		"key":         String(item["msg_key"]),
 		"sender_id":   ToInt64(item["sender_uid"], 0),
@@ -460,7 +467,12 @@ func NormalizeMessage(item map[string]any) map[string]any {
 		"text":        text,
 		"timestamp":   timestampISO(normalizeUnix(ToInt64(item["timestamp"], 0))),
 		"revoked":     revoked,
+		"content":     content,
 	}
+	if detail := messageDetail(msgType, content); len(detail) > 0 {
+		result["detail"] = detail
+	}
+	return result
 }
 
 func NormalizeUnread(item map[string]any) map[string]any {
@@ -477,7 +489,10 @@ func MessageSummary(msgType int, content any, revoked bool) (string, string) {
 	if revoked || msgType == 5 {
 		return "revoke", "[已撤回]"
 	}
-	decoded := DecodeJSON(content)
+	decoded := Map(decodeMessageContent(content))
+	if len(decoded) == 0 {
+		decoded = DecodeJSON(content)
+	}
 	switch msgType {
 	case 1:
 		return "text", strings.TrimSpace(firstString(decoded["content"], content))
@@ -494,7 +509,7 @@ func MessageSummary(msgType int, content any, revoked bool) (string, string) {
 		}
 		return "other", "[分享] " + title
 	case 10:
-		text := strings.TrimSpace(firstString(decoded["content"], decoded["title"]))
+		text := strings.TrimSpace(firstString(decoded["text"], decoded["title"], decoded["content"]))
 		if text == "" {
 			return "tip", "[通知]"
 		}
@@ -512,7 +527,11 @@ func MessageSummary(msgType int, content any, revoked bool) (string, string) {
 		}
 		return "article", "[专栏] " + title
 	case 13:
-		return "image", "[图片卡片]"
+		cover := firstString(decoded["pic_url"], decoded["url"])
+		if cover == "" {
+			return "image", "[图片卡片]"
+		}
+		return "image", "[图片卡片] " + cover
 	case 18:
 		parts := make([]string, 0)
 		for _, item := range List(decoded["content"]) {
@@ -542,6 +561,161 @@ func MessageSummary(msgType int, content any, revoked bool) (string, string) {
 			return "other", fmt.Sprintf("[类型%d]", msgType)
 		}
 		return "other", fmt.Sprintf("[类型%d] %s", msgType, raw)
+	}
+}
+
+func decodeMessageContent(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		expandNestedJSON(typed)
+		return typed
+	case []any:
+		return typed
+	case string:
+		text := strings.TrimSpace(typed)
+		if text == "" {
+			return map[string]any{}
+		}
+		var decoded any
+		if err := json.Unmarshal([]byte(text), &decoded); err != nil {
+			return text
+		}
+		if mapped, ok := decoded.(map[string]any); ok {
+			expandNestedJSON(mapped)
+			return mapped
+		}
+		return decoded
+	default:
+		return map[string]any{}
+	}
+}
+
+func expandNestedJSON(value map[string]any) {
+	raw, ok := value["content"].(string)
+	if !ok || strings.TrimSpace(raw) == "" {
+		return
+	}
+	var decoded any
+	if err := json.Unmarshal([]byte(raw), &decoded); err != nil {
+		return
+	}
+	value["content"] = decoded
+}
+
+func messageDetail(msgType int, content any) map[string]any {
+	decoded := Map(content)
+	detail := map[string]any{}
+	switch msgType {
+	case 2, 6:
+		setIfPresent(detail, "url", firstValue(decoded["url"], decoded["original"], decoded["imageUrl"]))
+		setIfPresent(detail, "width", decoded["width"])
+		setIfPresent(detail, "height", decoded["height"])
+		setIfPresent(detail, "size", decoded["size"])
+	case 7:
+		setIfPresent(detail, "title", decoded["title"])
+		setIfPresent(detail, "author", decoded["author"])
+		setIfPresent(detail, "cover", decoded["thumb"])
+		setIfPresent(detail, "headline", decoded["headline"])
+		setIfPresent(detail, "bvid", decoded["bvid"])
+		setIfPresent(detail, "id", decoded["id"])
+		setIfPresent(detail, "source", decoded["source"])
+		setIfPresent(detail, "url", shareURL(decoded))
+	case 10:
+		setIfPresent(detail, "title", decoded["title"])
+		setIfPresent(detail, "text", decoded["text"])
+		setIfPresent(detail, "url", firstValue(decoded["jump_uri"], decoded["jump_uri_2"], decoded["jump_uri_3"]))
+		if modules := List(decoded["modules"]); len(modules) > 0 {
+			detail["modules"] = modules
+		}
+	case 11:
+		setIfPresent(detail, "title", decoded["title"])
+		setIfPresent(detail, "bvid", decoded["bvid"])
+		setIfPresent(detail, "cover", decoded["cover"])
+		setIfPresent(detail, "duration", decoded["times"])
+		if bvid := strings.TrimSpace(String(decoded["bvid"])); bvid != "" {
+			detail["url"] = "https://www.bilibili.com/video/" + bvid
+		}
+		attach := Map(decoded["attach_msg"])
+		setIfPresent(detail, "attach", firstValue(attach["content"], decoded["attach_msg"]))
+	case 12:
+		setIfPresent(detail, "title", decoded["title"])
+		setIfPresent(detail, "summary", decoded["summary"])
+		setIfPresent(detail, "rid", decoded["rid"])
+		if images := List(decoded["image_urls"]); len(images) > 0 {
+			detail["covers"] = images
+			setIfPresent(detail, "cover", images[0])
+		}
+		if rid := strings.TrimSpace(String(decoded["rid"])); rid != "" && rid != "0" {
+			detail["url"] = "https://www.bilibili.com/read/cv" + rid
+		}
+	case 13:
+		setIfPresent(detail, "url", decoded["jump_url"])
+		setIfPresent(detail, "cover", decoded["pic_url"])
+	case 14:
+		setIfPresent(detail, "title", decoded["title"])
+		setIfPresent(detail, "author", decoded["author"])
+		setIfPresent(detail, "cover", decoded["cover"])
+		setIfPresent(detail, "source", decoded["source"])
+		setIfPresent(detail, "id", decoded["sourceID"])
+		if strings.TrimSpace(String(decoded["source"])) == "直播" {
+			if room := strings.TrimSpace(String(decoded["sourceID"])); room != "" {
+				detail["url"] = "https://live.bilibili.com/" + room
+			}
+		}
+	case 16:
+		setIfPresent(detail, "title", decoded["main_title"])
+		if cards := List(decoded["sub_cards"]); len(cards) > 0 {
+			detail["cards"] = cards
+		}
+	}
+	return detail
+}
+
+func shareURL(decoded map[string]any) string {
+	source := ToInt(decoded["source"], 0)
+	id := strings.TrimSpace(String(decoded["id"]))
+	bvid := strings.TrimSpace(String(decoded["bvid"]))
+	switch source {
+	case 5:
+		if bvid != "" {
+			return "https://www.bilibili.com/video/" + bvid
+		}
+		if id != "" && id != "0" {
+			return "https://www.bilibili.com/video/av" + id
+		}
+	case 6:
+		if id != "" && id != "0" {
+			return "https://www.bilibili.com/read/cv" + id
+		}
+	}
+	return ""
+}
+
+func setIfPresent(dst map[string]any, key string, value any) {
+	if value == nil {
+		return
+	}
+	switch typed := value.(type) {
+	case string:
+		if text := strings.TrimSpace(typed); text != "" {
+			dst[key] = text
+		}
+	case []any:
+		if len(typed) > 0 {
+			dst[key] = typed
+		}
+	case map[string]any:
+		if len(typed) > 0 {
+			dst[key] = typed
+		}
+	default:
+		if number := ToInt64(value, 0); number != 0 {
+			dst[key] = number
+			return
+		}
+		if text := strings.TrimSpace(String(value)); text != "" && text != "0" {
+			dst[key] = text
+		}
 	}
 }
 

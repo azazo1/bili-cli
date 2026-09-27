@@ -84,3 +84,27 @@ func TestNormalizeDynamicItemReadsCurrentResponse(t *testing.T) {
 		t.Fatalf("unexpected normalized dynamic: %#v", got)
 	}
 }
+
+func TestNormalizeMessageExpandsVideoAndImage(t *testing.T) {
+	video := NormalizeMessage(map[string]any{
+		"msg_seqno":   9,
+		"sender_uid":  42,
+		"msg_type":    11,
+		"content":     `{"title":"demo","bvid":"BV1xx","cover":"https://example.test/cover.jpg","times":125}`,
+		"timestamp":   1700000000,
+	})
+	detail := Map(video["detail"])
+	content := Map(video["content"])
+	if video["type"] != "video" || content["bvid"] != "BV1xx" || detail["bvid"] != "BV1xx" || detail["url"] != "https://www.bilibili.com/video/BV1xx" {
+		t.Fatalf("unexpected video message: %#v", video)
+	}
+	pic := NormalizeMessage(map[string]any{
+		"msg_seqno": 8,
+		"msg_type":  2,
+		"content":   `{"url":"https://example.test/a.png","width":100,"height":50}`,
+		"timestamp": 1700000000,
+	})
+	if Map(pic["detail"])["url"] != "https://example.test/a.png" || Map(pic["content"])["url"] != "https://example.test/a.png" {
+		t.Fatalf("unexpected image message: %#v", pic)
+	}
+}

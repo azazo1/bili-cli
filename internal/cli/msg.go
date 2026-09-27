@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/azazo1/bilibili-cli/internal/api"
 	"github.com/azazo1/bilibili-cli/internal/model"
 )
 
@@ -152,9 +153,9 @@ func newMsgShowCommand(app *App) *cobra.Command {
 	var ack bool
 	var asJSON, asYAML bool
 	command := &cobra.Command{
-		Use:   "show UID_OR_NAME_OR_URL",
+		Use:   "show UID_OR_NAME_OR_URL [SEQ]",
 		Short: "查看与指定用户的私信",
-		Args:  cobra.ExactArgs(1),
+		Args:  cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			mode, err := app.mode(cmd, asJSON, asYAML)
 			if err != nil {
@@ -174,6 +175,14 @@ func newMsgShowCommand(app *App) *cobra.Command {
 			uid, err := resolveUID(cmd, app, args[0], mode)
 			if err != nil {
 				return err
+			}
+			var seq int64
+			if len(args) == 2 {
+				parsed, parseErr := strconv.ParseInt(args[1], 10, 64)
+				if parseErr != nil || parsed <= 0 {
+					return app.invalidInput(cmd, "SEQ 必须是正整数", mode)
+				}
+				seq = parsed
 			}
 			ctx := contextOrBackground(cmd.Context())
 			data, fetchErr := app.API.GetSessionMessages(ctx, uid, maxItems, credential)
@@ -206,20 +215,40 @@ func newMsgShowCommand(app *App) *cobra.Command {
 					return app.apiFailure(ackErr, "标记私信已读失败", mode)
 				}
 			}
+			selfID := int64Value(credential.DedeUserID, 0)
+			if seq > 0 {
+				var found map[string]any
+				for _, item := range items {
+					if int64Value(item["seqno"], 0) == seq {
+						found = item
+						break
+					}
+				}
+				if found == nil {
+					return app.Fail(api.NewError(api.CodeNotFound, "", fmt.Sprintf("未找到 seqno=%d. 可加大 --max 后重试", seq)), "", mode)
+				}
+				payload := map[string]any{
+					"talker_id": uid,
+					"item":      found,
+					"acked":     ack,
+				}
+				return app.Complete(payload, mode, func(w io.Writer) {
+					renderExpandedMessage(w, found, selfID)
+				})
+			}
 			payload := map[string]any{
 				"talker_id": uid,
 				"items":     items,
 				"has_more":  boolValue(data["has_more"]),
 				"acked":     ack,
 			}
-			selfID := int64Value(credential.DedeUserID, 0)
 			return app.Complete(payload, mode, func(w io.Writer) {
 				if len(items) == 0 {
 					fmt.Fprintf(w, "与 UID=%d 暂无私信\n", uid)
 					return
 				}
 				for _, item := range items {
-					fmt.Fprintf(w, "%s  %s  %s\n", displayOrDash(stringValue(item["timestamp"])), senderLabel(int64Value(item["sender_id"], 0), selfID), displayOrDash(stringValue(item["text"])))
+					fmt.Fprintf(w, "%s  %s  %s  %s\n", stringValue(item["seqno"]), displayOrDash(stringValue(item["timestamp"])), senderLabel(int64Value(item["sender_id"], 0), selfID), displayOrDash(stringValue(item["text"])))
 				}
 			})
 		},
@@ -372,6 +401,22 @@ func newMsgRemoveCommand(app *App) *cobra.Command {
 	command.Flags().BoolVar(&yes, "yes", false, "跳过确认")
 	addStructuredFlags(command, &asJSON, &asYAML)
 	return command
+}
+
+func renderExpandedMessage(w io.Writer, item map[string]any, selfID int64) {
+	fmt.Fprintf(w, "seqno: %s\n", stringValue(item["seqno"]))
+	fmt.Fprintf(w, "时间: %s\n", displayOrDash(stringValue(item["timestamp"])))
+	fmt.Fprintf(w, "发送者: %s\n", senderLabel(int64Value(item["sender_id"], 0), selfID))
+	fmt.Fprintf(w, "类型: %s\n", displayOrDash(stringValue(item["type"])))
+	fmt.Fprintf(w, "摘要: %s\n", displayOrDash(stringValue(item["text"])))
+	detail := mapValue(item["detail"])
+	for _, key := range []string{"title", "bvid", "url", "cover", "author", "summary", "duration", "width", "height", "id", "rid", "source"} {
+		value := strings.TrimSpace(stringValue(detail[key]))
+		if value == "" {
+			continue
+		}
+		fmt.Fprintf(w, "%s: %s\n", key, value)
+	}
 }
 
 func senderLabel(senderID, selfID int64) string {
