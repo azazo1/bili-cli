@@ -68,9 +68,12 @@ func (item DanmakuItem) ModeName() string {
 
 // DanmakuResult 是一个视频分P的弹幕集合.
 type DanmakuResult struct {
-	CID      int64
-	Segments int
-	Items    []DanmakuItem
+	CID int64
+	// TotalSegments 是按视频时长算出的分段总数.
+	TotalSegments int
+	// Segment 大于 0 时表示本次只拉取了该分段, 其余分段未请求.
+	Segment int
+	Items   []DanmakuItem
 }
 
 // DanmakuPostRequest 描述一条待发送的弹幕.
@@ -91,34 +94,74 @@ type DanmakuPostResult struct {
 	Progress int
 }
 
+// DanmakuSegmentCount 按视频时长计算弹幕分段总数, 至少为 1.
+func DanmakuSegmentCount(durationMs int) int {
+	if durationMs <= 0 {
+		return 1
+	}
+	segments := (durationMs + danmakuSegmentLengthMs - 1) / danmakuSegmentLengthMs
+	if segments < 1 {
+		return 1
+	}
+	return segments
+}
+
 // GetVideoDanmaku 拉取指定 cid 的全部弹幕分段并合并.
 func (c *Client) GetVideoDanmaku(ctx context.Context, cid int64, durationMs int, cred *Credential) (DanmakuResult, error) {
+	return c.getVideoDanmaku(ctx, cid, durationMs, 0, cred)
+}
+
+// GetVideoDanmakuSegment 只拉取指定分段, 用于长视频按时间定位查看.
+// segment 为 0 时与 GetVideoDanmaku 等价.
+func (c *Client) GetVideoDanmakuSegment(ctx context.Context, cid int64, durationMs int, segment int, cred *Credential) (DanmakuResult, error) {
+	if segment < 0 {
+		return DanmakuResult{}, NewError(CodeInvalidInput, "获取弹幕", "弹幕分段序号不能为负数")
+	}
+	return c.getVideoDanmaku(ctx, cid, durationMs, segment, cred)
+}
+
+// getVideoDanmaku 是 GetVideoDanmaku 与 GetVideoDanmakuSegment 的共同实现.
+// segment 为 0 时拉取全部分段, 大于 0 时只拉取该分段.
+func (c *Client) getVideoDanmaku(ctx context.Context, cid int64, durationMs int, segment int, cred *Credential) (DanmakuResult, error) {
 	if cid <= 0 {
 		return DanmakuResult{}, NewError(CodeInvalidInput, "获取弹幕", "缺少有效的 cid")
 	}
-	segments := 1
-	if durationMs > 0 {
-		segments = (durationMs + danmakuSegmentLengthMs - 1) / danmakuSegmentLengthMs
-	}
-	if segments < 1 {
-		segments = 1
-	}
-	if segments > danmakuMaxSegments {
+	total := DanmakuSegmentCount(durationMs)
+	if total > danmakuMaxSegments {
 		return DanmakuResult{}, NewError(CodeInvalidInput, "获取弹幕",
-			fmt.Sprintf("视频时长对应 %d 个弹幕分段, 超过上限 %d", segments, danmakuMaxSegments))
+			fmt.Sprintf("视频时长对应 %d 个弹幕分段, 超过上限 %d", total, danmakuMaxSegments))
+	}
+	result := DanmakuResult{CID: cid, TotalSegments: total, Segment: segment}
+	if segment > 0 {
+		if segment > total {
+			return DanmakuResult{}, NewError(CodeNotFound, "获取弹幕",
+				fmt.Sprintf("分段序号 %d 超出范围, 该视频共 %d 个分段", segment, total))
+		}
+		if c.Logger != nil {
+			c.Logger.Info("开始获取弹幕分段", "cid", cid, "segment", segment, "total_segments", total)
+		}
+		items, err := c.getDanmakuSegment(ctx, cid, segment, cred)
+		if err != nil {
+			return DanmakuResult{}, err
+		}
+		result.Items = mergeDanmakuItems(items)
+		if c.Logger != nil {
+			c.Logger.Info("弹幕分段获取完成", "cid", cid, "segment", segment, "count", len(result.Items))
+		}
+		return result, nil
 	}
 	if c.Logger != nil {
-		c.Logger.Info("开始获取弹幕", "cid", cid, "segments", segments, "duration_ms", durationMs)
+		c.Logger.Info("开始获取弹幕", "cid", cid, "segments", total, "duration_ms", durationMs)
 	}
-	items, err := c.getDanmakuSegments(ctx, cid, segments, cred)
+	items, err := c.getDanmakuSegments(ctx, cid, total, cred)
 	if err != nil {
 		return DanmakuResult{}, err
 	}
-	items = mergeDanmakuItems(items)
+	result.Items = mergeDanmakuItems(items)
 	if c.Logger != nil {
-		c.Logger.Info("弹幕获取完成", "cid", cid, "segments", segments, "count", len(items))
+		c.Logger.Info("弹幕获取完成", "cid", cid, "segments", total, "count", len(result.Items))
 	}
-	return DanmakuResult{CID: cid, Segments: segments, Items: items}, nil
+	return result, nil
 }
 
 // GetDanmakuSegment 拉取单个分段. 分段越界时返回空切片且不报错.
@@ -231,6 +274,42 @@ func mergeDanmakuItems(items []DanmakuItem) []DanmakuItem {
 		return merged[left].ID < merged[right].ID
 	})
 	return merged
+}
+
+// FilterDanmakuByProgress 只保留出现时间落在 [fromMs, toMs] 内的弹幕.
+// fromMs 或 toMs 为负数时表示该侧不设限制, 必须已有 fromMs <= toMs.
+func FilterDanmakuByProgress(items []DanmakuItem, fromMs, toMs int) ([]DanmakuItem, error) {
+	if fromMs >= 0 && toMs >= 0 && fromMs > toMs {
+		return nil, NewError(CodeInvalidInput, "筛选弹幕", "起始时间不能晚于结束时间")
+	}
+	filtered := make([]DanmakuItem, 0, len(items))
+	for _, item := range items {
+		if fromMs >= 0 && item.Progress < fromMs {
+			continue
+		}
+		if toMs >= 0 && item.Progress > toMs {
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+	return filtered, nil
+}
+
+// DanmakuSegmentRange 返回指定分段覆盖的时间区间, 单位毫秒.
+// 第二个返回值表示该区间是否被视频时长截断.
+func DanmakuSegmentRange(segment int, durationMs int) (int, int) {
+	if segment < 1 {
+		segment = 1
+	}
+	start := (segment - 1) * danmakuSegmentLengthMs
+	end := segment*danmakuSegmentLengthMs - 1
+	if durationMs > 0 && end > durationMs {
+		end = durationMs
+	}
+	if end < start {
+		end = start
+	}
+	return start, end
 }
 
 // PostVideoDanmaku 发送一条视频弹幕.

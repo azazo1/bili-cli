@@ -386,3 +386,124 @@ func TestNormalizeDanmakuFormats(t *testing.T) {
 		t.Fatal("normalizeDanmakuFormats should reject srt")
 	}
 }
+
+func TestDanmakuTimeLabel(t *testing.T) {
+	// 这里的时间戳语义是毫秒, 时间标签曾把十分之一秒误当成秒.
+	cases := map[int]string{
+		0:       "0:00.0",
+		100:     "0:00.1",
+		1000:    "0:01.0",
+		60000:   "1:00.0",
+		360000:  "6:00.0",
+		678400:  "11:18.4",
+		719999:  "11:59.9",
+		3600000: "1:00:00.0",
+	}
+	for input, expected := range cases {
+		if got := danmakuTimeLabel(input); got != expected {
+			t.Fatalf("danmakuTimeLabel(%d) = %q, want %q", input, got, expected)
+		}
+	}
+	if got := danmakuTimeLabel(-5); got != "0:00.0" {
+		t.Fatalf("negative label = %q", got)
+	}
+}
+
+func TestParseDanmakuRange(t *testing.T) {
+	from, to, err := parseDanmakuRange("1m20s", "2:00")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if from != 80000 || to != 120000 {
+		t.Fatalf("range = [%d, %d], want [80000, 120000]", from, to)
+	}
+	// 未设置的一侧返回 -1, 表示不限制.
+	from, to, err = parseDanmakuRange("", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if from != -1 || to != -1 {
+		t.Fatalf("unset range = [%d, %d], want [-1, -1]", from, to)
+	}
+	from, to, err = parseDanmakuRange("30s", "")
+	if err != nil || from != 30000 || to != -1 {
+		t.Fatalf("from-only range = [%d, %d], %v", from, to, err)
+	}
+	if _, _, err := parseDanmakuRange("5:00", "1:00"); err == nil {
+		t.Fatal("inverted range should fail")
+	}
+	if _, _, err := parseDanmakuRange("abc", ""); err == nil {
+		t.Fatal("invalid from should fail")
+	}
+}
+
+func TestDanmakuCommandSegmentSelectsRange(t *testing.T) {
+	server := newDanmakuTestServer(t, nil)
+	defer server.Close()
+	stdout := &bytes.Buffer{}
+	app := newDanmakuTestApp(t, server, stdout)
+	root := NewRoot(app)
+	// P2 时长 700 秒, 共 2 个分段; 只请求第 2 段.
+	root.SetArgs([]string{"video", "danmaku", "BV1ABcsztEcY?p=2", "--segment", "2"})
+	if err := root.ExecuteContext(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "2/2 (6:00.0 - 11:40.0)") {
+		t.Fatalf("segment range missing or wrong: %q", output)
+	}
+	// 该分段只有底部弹幕 1 条.
+	if !strings.Contains(output, "弹幕数\t1") {
+		t.Fatalf("segment item count wrong: %q", output)
+	}
+	if !strings.Contains(output, "底部\t1") {
+		t.Fatalf("segment mode breakdown wrong: %q", output)
+	}
+}
+
+func TestDanmakuCommandRejectsOutOfRangeSegment(t *testing.T) {
+	server := newDanmakuTestServer(t, nil)
+	defer server.Close()
+	stdout := &bytes.Buffer{}
+	app := newDanmakuTestApp(t, server, stdout)
+	root := NewRoot(app)
+	root.SetArgs([]string{"video", "danmaku", "BV1ABcsztEcY?p=2", "--segment", "9"})
+	err := root.ExecuteContext(context.Background())
+	if err == nil {
+		t.Fatal("out of range segment should fail")
+	}
+	if !strings.Contains(err.Error(), "超出范围") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestDanmakuCommandFiltersByTimeRange(t *testing.T) {
+	server := newDanmakuTestServer(t, nil)
+	defer server.Close()
+	stdout := &bytes.Buffer{}
+	app := newDanmakuTestApp(t, server, stdout)
+	root := NewRoot(app)
+	// P2 的弹幕: 段 1 在 1s 和 2s, 段 2 在 400s (6:40).
+	root.SetArgs([]string{"video", "danmaku", "BV1ABcsztEcY?p=2", "--from", "1s", "--to", "3s", "--limit", "0"})
+	if err := root.ExecuteContext(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "弹幕数\t2") {
+		t.Fatalf("time filter did not narrow the set: %q", output)
+	}
+	if strings.Contains(output, "底部弹幕") {
+		t.Fatalf("out-of-range danmaku leaked through: %q", output)
+	}
+	// 反过来只取后面的那一条.
+	stdout.Reset()
+	root = NewRoot(app)
+	root.SetArgs([]string{"video", "danmaku", "BV1ABcsztEcY?p=2", "--from", "6m", "--limit", "0"})
+	if err := root.ExecuteContext(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	output = stdout.String()
+	if !strings.Contains(output, "弹幕数\t1") || !strings.Contains(output, "底部弹幕") {
+		t.Fatalf("from-only filter wrong: %q", output)
+	}
+}

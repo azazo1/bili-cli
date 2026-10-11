@@ -139,30 +139,59 @@ func newDanmakuSendCommand(app *App) *cobra.Command {
 	return command
 }
 
-// parseDanmakuProgress 解析弹幕出现时间, 返回毫秒.
-func parseDanmakuProgress(value string) (int, error) {
+// parseDanmakuTime 解析一个时间值, 返回毫秒; 空字符串返回 -1 表示未设置该侧限制.
+// flagName 只用于错误信息.
+func parseDanmakuTime(value, flagName string) (int, error) {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {
-		return 0, nil
+		return -1, nil
 	}
 	if strings.Contains(trimmed, ":") {
 		parsed, err := parseDanmakuClock(trimmed)
 		if err != nil {
-			return 0, err
+			return 0, fmt.Errorf("无法解析 --%s: %s", flagName, value)
 		}
 		return parsed, nil
 	}
 	if seconds, err := strconv.ParseFloat(strings.TrimSuffix(strings.ToLower(trimmed), "s"), 64); err == nil {
 		if seconds < 0 {
-			return 0, fmt.Errorf("--progress 不能为负数")
+			return 0, fmt.Errorf("--%s 不能为负数", flagName)
 		}
 		return int(seconds * 1000), nil
 	}
 	duration, err := parseDanmakuDuration(trimmed)
 	if err != nil {
-		return 0, fmt.Errorf("无法解析 --progress: %s", value)
+		return 0, fmt.Errorf("无法解析 --%s: %s", flagName, value)
 	}
 	return duration, nil
+}
+
+// parseDanmakuRange 解析 --from 与 --to, 未设置的一侧返回 -1.
+func parseDanmakuRange(from, to string) (int, int, error) {
+	fromMs, err := parseDanmakuTime(from, "from")
+	if err != nil {
+		return 0, 0, err
+	}
+	toMs, err := parseDanmakuTime(to, "to")
+	if err != nil {
+		return 0, 0, err
+	}
+	if fromMs >= 0 && toMs >= 0 && fromMs > toMs {
+		return 0, 0, fmt.Errorf("--from 不能晚于 --to")
+	}
+	return fromMs, toMs, nil
+}
+
+// parseDanmakuProgress 解析弹幕出现时间, 返回毫秒; 空值表示 0.
+func parseDanmakuProgress(value string) (int, error) {
+	parsed, err := parseDanmakuTime(value, "progress")
+	if err != nil {
+		return 0, err
+	}
+	if parsed < 0 {
+		return 0, nil
+	}
+	return parsed, nil
 }
 
 // parseDanmakuClock 解析 mm:ss.d 或 hh:mm:ss 形式.

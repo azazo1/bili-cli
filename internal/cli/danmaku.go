@@ -25,6 +25,9 @@ type danmakuCommandOptions struct {
 	outputDir   string
 	formats     []string
 	limit       int
+	segment     int
+	from        string
+	to          string
 	assFontSize float64
 	assDuration time.Duration
 	assFontFace string
@@ -53,6 +56,9 @@ func newDanmakuCommand(app *App) *cobra.Command {
 	command.Flags().StringVarP(&options.outputDir, "output", "o", "", "弹幕导出目录, 留空则只输出到终端")
 	command.Flags().StringSliceVar(&options.formats, "format", []string{"ass"}, "导出格式, 支持 ass 和 xml")
 	command.Flags().IntVar(&options.limit, "limit", 0, "终端与结构化输出的弹幕条数上限, 0 表示全部")
+	command.Flags().IntVar(&options.segment, "segment", 0, "只拉取第 N 个 6 分钟分段, 0 表示全部")
+	command.Flags().StringVar(&options.from, "from", "", "只显示该时间之后的弹幕, 支持 1m20s 或 00:12.5")
+	command.Flags().StringVar(&options.to, "to", "", "只显示该时间之前的弹幕, 格式同 --from")
 	command.Flags().Float64Var(&options.assFontSize, "ass-fontsize", 56, "ASS 基准字号")
 	command.Flags().DurationVar(&options.assDuration, "ass-duration", 8*time.Second, "ASS 滚动弹幕显示时长")
 	command.Flags().StringVar(&options.assFontFace, "ass-font", "sans-serif", "ASS 字体名")
@@ -68,6 +74,13 @@ func runDanmakuCommand(app *App, cmd *cobra.Command, input string, options *danm
 	}
 	if options.limit < 0 {
 		return app.invalidInput(cmd, "--limit 不能为负数", mode)
+	}
+	if options.segment < 0 {
+		return app.invalidInput(cmd, "--segment 不能为负数", mode)
+	}
+	fromMs, toMs, err := parseDanmakuRange(options.from, options.to)
+	if err != nil {
+		return app.invalidInput(cmd, err.Error(), mode)
 	}
 	formats, err := normalizeDanmakuFormats(options.formats)
 	if err != nil {
@@ -91,9 +104,17 @@ func runDanmakuCommand(app *App, cmd *cobra.Command, input string, options *danm
 	}
 	selectedPage := pages[reference.Page-1]
 	durationMs := selectedPage.DurationSeconds * 1000
-	result, err := app.API.GetVideoDanmaku(ctx, selectedPage.CID, durationMs, credential)
+	result, err := app.API.GetVideoDanmakuSegment(ctx, selectedPage.CID, durationMs, options.segment, credential)
 	if err != nil {
 		return app.apiFailure(err, "获取弹幕", mode)
+	}
+	// 时间区间筛选作用于本次的弹幕集合, 展示与导出都只看该区间.
+	if fromMs >= 0 || toMs >= 0 {
+		filtered, filterErr := api.FilterDanmakuByProgress(result.Items, fromMs, toMs)
+		if filterErr != nil {
+			return app.invalidInput(cmd, filterErr.Error(), mode)
+		}
+		result.Items = filtered
 	}
 	videoTitle := reference.BVID
 	if info, infoErr := app.API.GetVideoInfo(ctx, reference.BVID, credential); infoErr == nil {
@@ -117,11 +138,12 @@ func runDanmakuCommand(app *App, cmd *cobra.Command, input string, options *danm
 	}
 	app.Logger.Info("导出弹幕",
 		"bvid", reference.BVID, "page", reference.Page, "cid", selectedPage.CID,
-		"count", len(result.Items), "segments", result.Segments, "formats", formats)
+		"count", len(result.Items), "total_segments", result.TotalSegments,
+		"segment", result.Segment, "formats", formats)
 
 	payload := danmakuCommandPayload(reference.BVID, reference.Page, selectedPage, result, options.limit, exports, warnings)
 	return app.CompleteTable(payload, mode, options.asJSON, options.asYAML, func(w io.Writer) {
-		renderDanmakuResult(app, w, reference.BVID, reference.Page, result, options.limit, exports, warnings)
+		renderDanmakuResult(app, w, reference.BVID, reference.Page, selectedPage, result, options.limit, exports, warnings)
 	})
 }
 
@@ -223,14 +245,14 @@ func danmakuCommandPayload(bvid string, page int, selectedPage api.VideoPage, re
 		})
 	}
 	modeCounts := danmakuModeCounts(result.Items)
-	return map[string]any{
-		"bvid":       bvid,
-		"page":       page,
-		"cid":        selectedPage.CID,
-		"part_title": selectedPage.Title,
-		"duration":   selectedPage.DurationSeconds,
-		"segments":   result.Segments,
-		"total":      len(result.Items),
+	payload := map[string]any{
+		"bvid":           bvid,
+		"page":           page,
+		"cid":            selectedPage.CID,
+		"part_title":     selectedPage.Title,
+		"duration":       selectedPage.DurationSeconds,
+		"total_segments": result.TotalSegments,
+		"total":          len(result.Items),
 		"mode_counts": map[string]any{
 			"scroll": modeCounts[1],
 			"top":    modeCounts[5],
@@ -241,6 +263,18 @@ func danmakuCommandPayload(bvid string, page int, selectedPage api.VideoPage, re
 		"outputs":  outputs,
 		"warnings": warnings,
 	}
+	// 按分段拉取时给出该分段覆盖的时间区间, 便于定位.
+	if result.Segment > 0 {
+		start, end := api.DanmakuSegmentRange(result.Segment, selectedPage.DurationSeconds*1000)
+		payload["segment"] = result.Segment
+		payload["segment_range"] = map[string]any{
+			"from_ms": start,
+			"to_ms":   end,
+			"from":    danmakuTimeLabel(start),
+			"to":      danmakuTimeLabel(end),
+		}
+	}
+	return payload
 }
 
 func danmakuItemPayload(item api.DanmakuItem) map[string]any {
@@ -289,31 +323,42 @@ func danmakuModeCounts(items []api.DanmakuItem) map[int]int {
 	return counts
 }
 
+// danmakuTimeLabel 把毫秒渲染成 时:分:秒.十分之一秒, 少于 1 小时时省略小时段.
 func danmakuTimeLabel(progressMs int) string {
 	if progressMs < 0 {
 		progressMs = 0
 	}
-	total := progressMs / 100
-	hour := total / 3600
-	total -= hour * 3600
-	minute := total / 60
-	second := total - minute*60
-	tenth := (progressMs / 100) % 10
+	totalSeconds := progressMs / 1000
+	tenth := (progressMs % 1000) / 100
+	hour := totalSeconds / 3600
+	totalSeconds -= hour * 3600
+	minute := totalSeconds / 60
+	second := totalSeconds - minute*60
 	if hour > 0 {
 		return fmt.Sprintf("%d:%02d:%02d.%d", hour, minute, second, tenth)
 	}
-	return fmt.Sprintf("%02d:%02d.%d", minute, second, tenth)
+	return fmt.Sprintf("%d:%02d.%d", minute, second, tenth)
 }
 
-func renderDanmakuResult(app *App, w io.Writer, bvid string, page int, result api.DanmakuResult, limit int, exports []danmakuExportResult, warnings []string) {
+func renderDanmakuResult(app *App, w io.Writer, bvid string, page int, selectedPage api.VideoPage, result api.DanmakuResult, limit int, exports []danmakuExportResult, warnings []string) {
 	if len(result.Items) == 0 {
-		app.renderTable(w, "弹幕", []string{"字段", "内容"}, [][]string{
+		rows := [][]string{
 			{"BV号", bvid},
 			{"分P", fmt.Sprintf("P%d", page)},
 			{"CID", fmt.Sprintf("%d", result.CID)},
 			{"弹幕数", "0"},
-		})
-		fmt.Fprintln(w, "该视频暂无弹幕")
+		}
+		if result.Segment > 0 {
+			start, end := api.DanmakuSegmentRange(result.Segment, selectedPage.DurationSeconds*1000)
+			rows = append(rows, []string{"分段", fmt.Sprintf("%d/%d (%s - %s)",
+				result.Segment, result.TotalSegments, danmakuTimeLabel(start), danmakuTimeLabel(end))})
+		}
+		app.renderTable(w, "弹幕", []string{"字段", "内容"}, rows)
+		if result.Segment > 0 {
+			fmt.Fprintf(w, "第 %d 个分段没有弹幕\n", result.Segment)
+		} else {
+			fmt.Fprintln(w, "该视频暂无弹幕")
+		}
 		return
 	}
 	modeCounts := danmakuModeCounts(result.Items)
@@ -322,11 +367,19 @@ func renderDanmakuResult(app *App, w io.Writer, bvid string, page int, result ap
 		{"分P", fmt.Sprintf("P%d", page)},
 		{"CID", fmt.Sprintf("%d", result.CID)},
 		{"弹幕数", fmt.Sprintf("%d", len(result.Items))},
-		{"分段", fmt.Sprintf("%d", result.Segments)},
-		{"滚动", fmt.Sprintf("%d", modeCounts[1])},
-		{"顶部", fmt.Sprintf("%d", modeCounts[5])},
-		{"底部", fmt.Sprintf("%d", modeCounts[4])},
 	}
+	if result.Segment > 0 {
+		start, end := api.DanmakuSegmentRange(result.Segment, selectedPage.DurationSeconds*1000)
+		rows = append(rows, []string{"分段", fmt.Sprintf("%d/%d (%s - %s)",
+			result.Segment, result.TotalSegments, danmakuTimeLabel(start), danmakuTimeLabel(end))})
+	} else {
+		rows = append(rows, []string{"分段", fmt.Sprintf("%d", result.TotalSegments)})
+	}
+	rows = append(rows,
+		[]string{"滚动", fmt.Sprintf("%d", modeCounts[1])},
+		[]string{"顶部", fmt.Sprintf("%d", modeCounts[5])},
+		[]string{"底部", fmt.Sprintf("%d", modeCounts[4])},
+	)
 	if other := len(result.Items) - modeCounts[1] - modeCounts[5] - modeCounts[4]; other > 0 {
 		rows = append(rows, []string{"其他", fmt.Sprintf("%d", other)})
 	}

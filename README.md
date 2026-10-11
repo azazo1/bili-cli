@@ -72,12 +72,18 @@ go run ./cmd/bili video danmaku BV1ABcsztEcY
 go run ./cmd/bili video danmu BV1ABcsztEcY -o ./downloads --format ass,xml
 go run ./cmd/bili video danmaku "https://www.bilibili.com/video/BV1ABcsztEcY?p=2" -o ./downloads
 go run ./cmd/bili video danmaku BV1ABcsztEcY --json --limit 100
+go run ./cmd/bili video danmaku BV1ABcsztEcY --from 5:00 --to 6:00
+go run ./cmd/bili video danmaku BV1ABcsztEcY --segment 3
 go run ./cmd/bili video danmaku send BV1ABcsztEcY "前方高能" --progress 1m20s --mode top --color "#FF0000"
 ```
 
-`bili video danmaku` 按视频时长逐段拉取弹幕并合并去重, 按出现时间排序. 终端默认输出概览与前 20 条预览, `--limit` 可调整预览条数. `--format` 支持 `ass` 和 `xml`, 可逗号分隔或重复传参. `-o` 指定导出目录, 文件写为 `<视频基名>.ass` 与 `<视频基名>.xml`, 与下载视频和字幕共享基名, 播放器会自动加载同名弹幕. 导出文件始终包含全部弹幕, 不受 `--limit` 影响. ASS 排版会为同一时刻的滚动弹幕分配不同的行以避免重叠, 可用 `--ass-fontsize`, `--ass-font` 和 `--ass-duration` 调整. XML 沿用 B 站标准格式, 便于其他工具读取.
+`bili video danmaku` 按视频时长逐段拉取弹幕并合并去重, 按出现时间排序. 终端默认输出概览与前 20 条预览, `--limit` 可调整条数. `--format` 支持 `ass` 和 `xml`, 可逗号分隔或重复传参. `-o` 指定导出目录, 文件写为 `<视频基名>.ass` 与 `<视频基名>.xml`, 与下载视频和字幕共享基名, 播放器会自动加载同名弹幕. 导出文件始终包含已拉取的全部弹幕, 不受 `--limit` 影响. ASS 排版会为同一时刻的滚动弹幕分配不同的行以避免重叠, 可用 `--ass-fontsize`, `--ass-font` 和 `--ass-duration` 调整. XML 沿用 B 站标准格式, 便于其他工具读取.
 
-需要完整条目时使用 `--json` 或 `--yaml`, 此时 `--limit 0` 表示输出全部弹幕.
+弹幕接口按时间把视频切成 6 分钟一段, 没有传统意义上的翻页. 需要完整条目时使用 `--json` 或 `--yaml`, 此时 `--limit 0` 表示输出全部弹幕.
+
+`--from` 与 `--to` 按出现时间筛选, 两者都可省略一侧. 时间格式与 `send --progress` 一致, 支持 `90`, `90s`, `1m30s` 和 `1:30`. 筛选同时作用于终端输出与导出文件, 可用来截取某个片段的弹幕.
+
+`--segment` 只拉取第 N 个 6 分钟分段, 长视频下可避免为看一小段而请求全部分段. 概览会显示该分段覆盖的时间区间以及分段总数. `--segment 0` 或不传表示拉取全部分段. 分段序号从 1 开始, 超出总数会报错.
 
 弹幕接口返回的是当前可见的弹幕池, 通常少于 `bili video` 详情里显示的弹幕统计数. 多分P视频需通过 URL 的 `?p=N` 选择对应分P.
 

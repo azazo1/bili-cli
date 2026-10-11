@@ -243,8 +243,8 @@ func TestGetVideoDanmakuMergesSegments(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Segments != 2 {
-		t.Fatalf("segments = %d, want 2", result.Segments)
+	if result.TotalSegments != 2 {
+		t.Fatalf("segments = %d, want 2", result.TotalSegments)
 	}
 	if len(result.Items) != 3 {
 		t.Fatalf("items = %d, want 3", len(result.Items))
@@ -257,6 +257,172 @@ func TestGetVideoDanmakuMergesSegments(t *testing.T) {
 	}
 	if len(requested) != 2 {
 		t.Fatalf("requested segments = %v, want 2 requests", requested)
+	}
+}
+
+func TestGetVideoDanmakuSegmentRequestsOnlyThatSegment(t *testing.T) {
+	requested := make([]string, 0, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body := new(bytes.Buffer)
+		if _, err := body.ReadFrom(r.Body); err != nil {
+			t.Errorf("read request: %v", err)
+			return
+		}
+		payload, err := decodeGRPCFrames(body.Bytes())
+		if err != nil {
+			t.Errorf("decode request frame: %v", err)
+			return
+		}
+		var segmentIndex uint64
+		remaining := payload
+		for len(remaining) > 0 {
+			number, wireType, tagLength := protowire.ConsumeTag(remaining)
+			if tagLength < 0 {
+				break
+			}
+			remaining = remaining[tagLength:]
+			if wireType != protowire.VarintType {
+				break
+			}
+			value, valueLength := protowire.ConsumeVarint(remaining)
+			if valueLength < 0 {
+				break
+			}
+			remaining = remaining[valueLength:]
+			if number == 4 {
+				segmentIndex = value
+			}
+		}
+		requested = append(requested, fmt.Sprintf("%d", segmentIndex))
+		w.Header().Set("Grpc-Status", "0")
+		w.Write(wrapGRPCFrame(buildDanmakuSegmentReply(t, []DanmakuItem{
+			{ID: int64(segmentIndex), Progress: int(segmentIndex) * danmakuSegmentLengthMs, Mode: 1, FontSize: 25, Content: fmt.Sprintf("seg-%d", segmentIndex), IDStr: fmt.Sprintf("%d", segmentIndex)},
+		})))
+	}))
+	defer server.Close()
+
+	client := NewClient()
+	client.AppBaseURL = server.URL
+	client.HTTP = server.Client()
+	// 6 个分段, 只请求第 3 个.
+	result, err := client.GetVideoDanmakuSegment(context.Background(), 42, 6*danmakuSegmentLengthMs, 3, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(requested) != 1 || requested[0] != "3" {
+		t.Fatalf("requested segments = %v, want only segment 3", requested)
+	}
+	if result.TotalSegments != 6 {
+		t.Fatalf("TotalSegments = %d, want 6", result.TotalSegments)
+	}
+	if result.Segment != 3 {
+		t.Fatalf("Segment = %d, want 3", result.Segment)
+	}
+	if len(result.Items) != 1 || result.Items[0].Content != "seg-3" {
+		t.Fatalf("unexpected items: %#v", result.Items)
+	}
+}
+
+func TestGetVideoDanmakuSegmentZeroFetchesAll(t *testing.T) {
+	requested := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requested++
+		w.Header().Set("Grpc-Status", "0")
+		w.Write(wrapGRPCFrame(buildDanmakuSegmentReply(t, []DanmakuItem{
+			{ID: int64(requested), Progress: requested * 1000, Mode: 1, FontSize: 25, Content: "x", IDStr: fmt.Sprintf("%d", requested)},
+		})))
+	}))
+	defer server.Close()
+	client := NewClient()
+	client.AppBaseURL = server.URL
+	client.HTTP = server.Client()
+	// segment 传 0 表示全部, CLI 的 --segment 默认值就是 0.
+	result, err := client.GetVideoDanmakuSegment(context.Background(), 42, 3*danmakuSegmentLengthMs, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requested != 3 {
+		t.Fatalf("requests = %d, want 3", requested)
+	}
+	if result.Segment != 0 || result.TotalSegments != 3 {
+		t.Fatalf("unexpected result metadata: segment=%d total=%d", result.Segment, result.TotalSegments)
+	}
+}
+
+func TestGetVideoDanmakuSegmentOutOfRange(t *testing.T) {
+	client := NewClient()
+	// 2 个分段, 请求第 5 个.
+	_, err := client.GetVideoDanmakuSegment(context.Background(), 42, 2*danmakuSegmentLengthMs, 5, nil)
+	if CodeOf(err) != CodeNotFound {
+		t.Fatalf("error code = %q, want %q", CodeOf(err), CodeNotFound)
+	}
+	if _, err := client.GetVideoDanmakuSegment(context.Background(), 42, 2*danmakuSegmentLengthMs, -1, nil); CodeOf(err) != CodeInvalidInput {
+		t.Fatalf("negative segment error code = %q", CodeOf(err))
+	}
+}
+
+func TestDanmakuSegmentCountAndRange(t *testing.T) {
+	counts := map[int]int{
+		0:       1,
+		-1:      1,
+		1:       1,
+		360000:  1,
+		360001:  2,
+		679000:  2,
+		2893000: 9,
+	}
+	for duration, expected := range counts {
+		if got := DanmakuSegmentCount(duration); got != expected {
+			t.Fatalf("DanmakuSegmentCount(%d) = %d, want %d", duration, got, expected)
+		}
+	}
+	// 段 2 覆盖 [360000, 719999], 与接口返回的 segmentRules 一致.
+	start, end := DanmakuSegmentRange(2, 0)
+	if start != 360000 || end != 719999 {
+		t.Fatalf("segment 2 range = [%d, %d]", start, end)
+	}
+	// 逐段区间必须首尾相接且不重叠.
+	previousEnd := -1
+	for segment := 1; segment <= 9; segment++ {
+		start, end := DanmakuSegmentRange(segment, 2893000)
+		if start != previousEnd+1 {
+			t.Fatalf("segment %d starts at %d, previous ended at %d", segment, start, previousEnd)
+		}
+		previousEnd = end
+	}
+	// 最后一段被视频时长截断.
+	if _, end := DanmakuSegmentRange(9, 2893000); end != 2893000 {
+		t.Fatalf("last segment end = %d, want 2893000", end)
+	}
+}
+
+func TestFilterDanmakuByProgress(t *testing.T) {
+	items := []DanmakuItem{
+		{ID: 1, Progress: 0},
+		{ID: 2, Progress: 1000},
+		{ID: 3, Progress: 2000},
+		{ID: 4, Progress: 3000},
+	}
+	filtered, err := FilterDanmakuByProgress(items, 1000, 2000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(filtered) != 2 || filtered[0].ID != 2 || filtered[1].ID != 3 {
+		t.Fatalf("filtered = %#v", filtered)
+	}
+	// 单侧限制.
+	if filtered, err = FilterDanmakuByProgress(items, 2000, -1); err != nil || len(filtered) != 2 {
+		t.Fatalf("from-only filter = %#v, %v", filtered, err)
+	}
+	if filtered, err = FilterDanmakuByProgress(items, -1, 1000); err != nil || len(filtered) != 2 {
+		t.Fatalf("to-only filter = %#v, %v", filtered, err)
+	}
+	// 无限制时全部保留.
+	if filtered, err = FilterDanmakuByProgress(items, -1, -1); err != nil || len(filtered) != 4 {
+		t.Fatalf("unbounded filter = %#v, %v", filtered, err)
+	}
+	if _, err := FilterDanmakuByProgress(items, 3000, 1000); CodeOf(err) != CodeInvalidInput {
+		t.Fatalf("inverted range error code = %q", CodeOf(err))
 	}
 }
 
