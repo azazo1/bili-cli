@@ -120,6 +120,7 @@ func newVideoCommand(app *App) *cobra.Command {
 	command.Flags().BoolVarP(&related, "related", "r", false, "显示相关推荐")
 	addStructuredFlags(command, &asJSON, &asYAML)
 	command.AddCommand(
+		newDanmakuCommand(app),
 		newSubtitleCommand(app),
 		newVideoDownloadCommand(app),
 		newCoinCommand(app),

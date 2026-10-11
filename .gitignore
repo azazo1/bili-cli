@@ -14,4 +14,7 @@ coverage.out
 *.m4s
 *.wav
 
+# Local scratch space.
+/.tmp/
+
 AGENTS.local.md

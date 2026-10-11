@@ -23,7 +23,7 @@ type videoDownloadItem struct {
 
 func newVideoDownloadCommand(app *App) *cobra.Command {
 	var outputDir string
-	var audioOnly, videoOnly, noMerge, withSRT bool
+	var audioOnly, videoOnly, noMerge, withSRT, withDanmaku bool
 	command := &cobra.Command{
 		Use:   "download BV_OR_URL",
 		Short: "下载视频音频和视频",
@@ -115,6 +115,18 @@ func newVideoDownloadCommand(app *App) *cobra.Command {
 					fmt.Fprintf(app.Out.Stdout, "字幕已保存: %s\n", subtitlePath)
 				}
 			}
+			if withDanmaku {
+				fmt.Fprintln(app.Out.Stdout, "尝试下载弹幕...")
+				exports, danmakuErr := app.downloadDanmakuForVideo(ctx, reference.BVID, reference.Page, urls.Pages, outDir, fileTitle, nil)
+				if danmakuErr != nil {
+					app.Logger.Warn("自动下载弹幕失败, 继续视频下载", "bvid", reference.BVID, "page", reference.Page, "error", danmakuErr)
+					fmt.Fprintf(app.Out.Stdout, "弹幕下载失败, 继续完成视频下载: %v\n", danmakuErr)
+				} else {
+					for _, item := range exports {
+						fmt.Fprintf(app.Out.Stdout, "弹幕已保存 (%s): %s\n", strings.ToUpper(item.Format), item.Path)
+					}
+				}
+			}
 			return nil
 		},
 	}
@@ -123,6 +135,7 @@ func newVideoDownloadCommand(app *App) *cobra.Command {
 	command.Flags().BoolVar(&videoOnly, "video-only", false, "仅下载视频")
 	command.Flags().BoolVar(&noMerge, "no-merge", false, "不尝试合并音频和视频")
 	command.Flags().BoolVar(&withSRT, "with-srt", false, "自动下载一条匹配字幕")
+	command.Flags().BoolVar(&withDanmaku, "with-danmaku", false, "同时导出 ASS 弹幕")
 	return command
 }
 

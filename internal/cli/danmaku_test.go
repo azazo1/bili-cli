@@ -1,0 +1,388 @@
+package cli
+
+import (
+	"bytes"
+	"context"
+	"encoding/xml"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"google.golang.org/protobuf/encoding/protowire"
+
+	"github.com/azazo1/bilibili-cli/internal/api"
+	"github.com/azazo1/bilibili-cli/internal/output"
+)
+
+// danmakuGRPCSegmentReply 构造 gRPC 长度前缀帧, 负载为 DmSegMobileReply.
+func danmakuGRPCSegmentReply(t *testing.T, entries []struct {
+	id       int64
+	progress int
+	mode     int
+	content  string
+}) []byte {
+	t.Helper()
+	payload := make([]byte, 0, 64)
+	for _, entry := range entries {
+		element := make([]byte, 0, 48)
+		element = protowire.AppendTag(element, 1, protowire.VarintType)
+		element = protowire.AppendVarint(element, uint64(entry.id))
+		element = protowire.AppendTag(element, 2, protowire.VarintType)
+		element = protowire.AppendVarint(element, uint64(entry.progress))
+		element = protowire.AppendTag(element, 3, protowire.VarintType)
+		element = protowire.AppendVarint(element, uint64(entry.mode))
+		element = protowire.AppendTag(element, 4, protowire.VarintType)
+		element = protowire.AppendVarint(element, 25)
+		element = protowire.AppendTag(element, 5, protowire.VarintType)
+		element = protowire.AppendVarint(element, 16777215)
+		element = protowire.AppendTag(element, 6, protowire.BytesType)
+		element = protowire.AppendString(element, "abcdef01")
+		element = protowire.AppendTag(element, 7, protowire.BytesType)
+		element = protowire.AppendString(element, entry.content)
+		element = protowire.AppendTag(element, 8, protowire.VarintType)
+		element = protowire.AppendVarint(element, 1770800435)
+		element = protowire.AppendTag(element, 9, protowire.VarintType)
+		element = protowire.AppendVarint(element, 10)
+		element = protowire.AppendTag(element, 12, protowire.BytesType)
+		element = protowire.AppendString(element, fmt.Sprintf("%d", entry.id))
+		element = protowire.AppendTag(element, 27, protowire.VarintType)
+		element = protowire.AppendVarint(element, 1)
+		payload = protowire.AppendTag(payload, 1, protowire.BytesType)
+		payload = protowire.AppendBytes(payload, element)
+	}
+	frame := make([]byte, 5+len(payload))
+	frame[0] = 0
+	length := len(payload)
+	frame[1] = byte(length >> 24)
+	frame[2] = byte(length >> 16)
+	frame[3] = byte(length >> 8)
+	frame[4] = byte(length)
+	copy(frame[5:], payload)
+	return frame
+}
+
+// newDanmakuTestServer 提供视频详情, 分P列表与弹幕 gRPC 的桩实现.
+func newDanmakuTestServer(t *testing.T, capture *[]string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/x/frontend/finger/spi":
+			fmt.Fprint(w, `{"code":0,"data":{"b_3":"device3","b_4":"device4"}}`)
+		case "/x/internal/gaia-gateway/ExClimbWuzhi":
+			fmt.Fprint(w, `{"code":0}`)
+		case "/x/web-interface/view":
+			fmt.Fprint(w, `{"code":0,"data":{"bvid":"BV1ABcsztEcY","title":"demo","duration":700,"owner":{"mid":1,"name":"up"},"stat":{"view":9}}}`)
+		case "/x/player/pagelist":
+			fmt.Fprint(w, `{"code":0,"data":[{"page":1,"cid":41,"part":"first","duration":60},{"page":2,"cid":42,"part":"second","duration":700}]}`)
+		case "/bilibili.community.service.dm.v1.DM/DmSegMobile":
+			if capture != nil {
+				*capture = append(*capture, r.URL.Path)
+			}
+			body := new(bytes.Buffer)
+			if _, err := body.ReadFrom(r.Body); err != nil {
+				t.Errorf("read grpc request: %v", err)
+				return
+			}
+			raw := body.Bytes()
+			if len(raw) < 5 {
+				t.Errorf("grpc frame too short: %d", len(raw))
+				return
+			}
+			payload := raw[5:]
+			segmentIndex := uint64(0)
+			remaining := payload
+			for len(remaining) > 0 {
+				number, wireType, tagLength := protowire.ConsumeTag(remaining)
+				if tagLength < 0 {
+					t.Errorf("invalid tag in grpc request")
+					return
+				}
+				remaining = remaining[tagLength:]
+				if wireType != protowire.VarintType {
+					t.Errorf("unexpected wire type %d in request", wireType)
+					return
+				}
+				value, valueLength := protowire.ConsumeVarint(remaining)
+				if valueLength < 0 {
+					t.Errorf("invalid varint in grpc request")
+					return
+				}
+				remaining = remaining[valueLength:]
+				if number == 4 {
+					segmentIndex = value
+				}
+			}
+			w.Header().Set("Grpc-Status", "0")
+			switch segmentIndex {
+			case 1:
+				w.Write(danmakuGRPCSegmentReply(t, []struct {
+					id       int64
+					progress int
+					mode     int
+					content  string
+				}{
+					{id: 1, progress: 1000, mode: 1, content: "滚动弹幕"},
+					{id: 2, progress: 2000, mode: 5, content: "顶部弹幕"},
+				}))
+			case 2:
+				w.Write(danmakuGRPCSegmentReply(t, []struct {
+					id       int64
+					progress int
+					mode     int
+					content  string
+				}{
+					{id: 3, progress: 400000, mode: 4, content: "底部弹幕"},
+				}))
+			default:
+				w.Header().Set("Grpc-Status", "2")
+				w.Header().Set("Bili-Status-Code", "-304")
+			}
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+}
+
+func newDanmakuTestApp(t *testing.T, server *httptest.Server, stdout *bytes.Buffer) *App {
+	t.Helper()
+	app := newTestApp(t)
+	app.API.BaseURL = server.URL
+	app.API.AppBaseURL = server.URL
+	app.API.HTTP = server.Client()
+	app.Out = &output.Writer{Stdout: stdout, Stderr: &bytes.Buffer{}, DefaultMode: "rich"}
+	return app
+}
+
+func TestDanmakuCommandExportsAssAndXML(t *testing.T) {
+	server := newDanmakuTestServer(t, nil)
+	defer server.Close()
+	stdout := &bytes.Buffer{}
+	app := newDanmakuTestApp(t, server, stdout)
+	outputDir := t.TempDir()
+	root := NewRoot(app)
+	root.SetArgs([]string{
+		"video", "danmaku", "https://www.bilibili.com/video/BV1ABcsztEcY?p=2",
+		"--format", "ass,xml", "-o", outputDir,
+	})
+	if err := root.ExecuteContext(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// 多分P视频使用 P2 的标题作为基名.
+	entries, err := os.ReadDir(outputDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("exported files = %d, want 2: %v", len(entries), entries)
+	}
+	var assPath, xmlPath string
+	for _, entry := range entries {
+		switch filepath.Ext(entry.Name()) {
+		case ".ass":
+			assPath = filepath.Join(outputDir, entry.Name())
+		case ".xml":
+			xmlPath = filepath.Join(outputDir, entry.Name())
+		}
+	}
+	if assPath == "" || xmlPath == "" {
+		t.Fatalf("missing export: ass=%q xml=%q", assPath, xmlPath)
+	}
+	assContent, err := os.ReadFile(assPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(assContent), "[Script Info]") || !strings.Contains(string(assContent), "[Events]") {
+		t.Fatalf("ass file missing sections")
+	}
+	if count := strings.Count(string(assContent), "Dialogue:"); count != 3 {
+		t.Fatalf("ass dialogue count = %d, want 3", count)
+	}
+	xmlContent, err := os.ReadFile(xmlPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document struct {
+		XMLName  xml.Name `xml:"i"`
+		ChatID   int64    `xml:"chatid"`
+		Comments []struct {
+			Parameters string `xml:"p,attr"`
+			Content    string `xml:",chardata"`
+		} `xml:"d"`
+	}
+	if err := xml.Unmarshal(xmlContent, &document); err != nil {
+		t.Fatalf("exported xml is not parseable: %v", err)
+	}
+	// P2 的 cid 是 42.
+	if document.ChatID != 42 {
+		t.Fatalf("chatid = %d, want 42", document.ChatID)
+	}
+	if len(document.Comments) != 3 {
+		t.Fatalf("xml comment count = %d, want 3", len(document.Comments))
+	}
+	if document.Comments[0].Content != "滚动弹幕" {
+		t.Fatalf("first comment = %q", document.Comments[0].Content)
+	}
+	if !strings.Contains(stdout.String(), "弹幕数\t3") {
+		t.Fatalf("summary missing danmaku count: %q", stdout.String())
+	}
+}
+
+func TestDanmakuCommandRejectsUnknownFormat(t *testing.T) {
+	server := newDanmakuTestServer(t, nil)
+	defer server.Close()
+	stdout := &bytes.Buffer{}
+	app := newDanmakuTestApp(t, server, stdout)
+	root := NewRoot(app)
+	root.SetArgs([]string{"video", "danmaku", "BV1ABcsztEcY?p=2", "--format", "srt"})
+	err := root.ExecuteContext(context.Background())
+	if err == nil {
+		t.Fatal("expected failure for unsupported format")
+	}
+	// 格式校验必须发生在请求之前, 否则会先报分P错误而不是格式错误.
+	if !strings.Contains(err.Error(), "--format") {
+		t.Fatalf("format validation did not run first: %v", err)
+	}
+	if !strings.Contains(err.Error(), "ass") || !strings.Contains(err.Error(), "xml") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestDanmakuCommandRequiresPageForMultiPartVideo(t *testing.T) {
+	server := newDanmakuTestServer(t, nil)
+	defer server.Close()
+	stdout := &bytes.Buffer{}
+	app := newDanmakuTestApp(t, server, stdout)
+	root := NewRoot(app)
+	root.SetArgs([]string{"video", "danmaku", "BV1ABcsztEcY"})
+	// 与 video subtitle 一致: 未指定分P时列出分P并以错误结束, 避免误导出第一P.
+	err := root.ExecuteContext(context.Background())
+	if err == nil {
+		t.Fatal("multi-part video without p parameter should fail")
+	}
+	if !strings.Contains(err.Error(), "p 参数") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "请先选择要下载的分P") {
+		t.Fatalf("multi-part hint missing: %q", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "bili video danmaku BV1ABcsztEcY?p=2") {
+		t.Fatalf("example command missing: %q", stdout.String())
+	}
+}
+
+func TestDanmakuSendBlockedInReadOnlyMode(t *testing.T) {
+	requests := make([]string, 0, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.URL.Path)
+		fmt.Fprint(w, `{"code":0,"data":{}}`)
+	}))
+	defer server.Close()
+	stdout := &bytes.Buffer{}
+	app := newDanmakuTestApp(t, server, stdout)
+	app.Config.Safety.ReadOnly = true
+	root := NewRoot(app)
+	root.SetArgs([]string{"video", "danmaku", "send", "BV1ABcsztEcY", "测试", "--progress", "10"})
+	err := root.ExecuteContext(context.Background())
+	if err == nil {
+		t.Fatal("expected read-only rejection")
+	}
+	if !strings.Contains(err.Error(), "只读模式已启用") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(requests) != 0 {
+		t.Fatalf("read-only mode should not send requests, got %v", requests)
+	}
+}
+
+func TestParseDanmakuProgress(t *testing.T) {
+	cases := map[string]int{
+		"":        0,
+		"12.5":    12500,
+		"12.5s":   12500,
+		"1m20s":   80000,
+		"1h2m3s":  3723000,
+		"00:12.5": 12500,
+		"1:20:00": 4800000,
+		"0:01":    1000,
+		"90":      90000,
+	}
+	for input, expected := range cases {
+		got, err := parseDanmakuProgress(input)
+		if err != nil {
+			t.Fatalf("parseDanmakuProgress(%q) error: %v", input, err)
+		}
+		if got != expected {
+			t.Fatalf("parseDanmakuProgress(%q) = %d, want %d", input, got, expected)
+		}
+	}
+	for _, input := range []string{"-1", "abc", "1x", "1:2:3:4", "1:xx"} {
+		if _, err := parseDanmakuProgress(input); err == nil {
+			t.Fatalf("parseDanmakuProgress(%q) should fail", input)
+		}
+	}
+}
+
+func TestParseDanmakuColorAndMode(t *testing.T) {
+	colors := map[string]int{
+		"#FF0000":  0xFF0000,
+		"ff0000":   0xFF0000,
+		"":         0xFFFFFF,
+		"16711680": 0xFF0000,
+		"0":        0,
+	}
+	for input, expected := range colors {
+		got, err := parseDanmakuColor(input)
+		if err != nil {
+			t.Fatalf("parseDanmakuColor(%q) error: %v", input, err)
+		}
+		if got != expected {
+			t.Fatalf("parseDanmakuColor(%q) = %d, want %d", input, got, expected)
+		}
+	}
+	for _, input := range []string{"#GGGGGG", "-1", "99999999"} {
+		if _, err := parseDanmakuColor(input); err == nil {
+			t.Fatalf("parseDanmakuColor(%q) should fail", input)
+		}
+	}
+	modes := map[string]int{
+		"scroll": api.DanmakuModeScroll,
+		"top":    api.DanmakuModeTop,
+		"bottom": api.DanmakuModeBottom,
+		"1":      api.DanmakuModeScroll,
+		"5":      api.DanmakuModeTop,
+		"4":      api.DanmakuModeBottom,
+	}
+	for input, expected := range modes {
+		got, err := parseDanmakuMode(input)
+		if err != nil {
+			t.Fatalf("parseDanmakuMode(%q) error: %v", input, err)
+		}
+		if got != expected {
+			t.Fatalf("parseDanmakuMode(%q) = %d, want %d", input, got, expected)
+		}
+	}
+	if _, err := parseDanmakuMode("reverse"); err == nil {
+		t.Fatal("parseDanmakuMode should reject unsupported mode")
+	}
+}
+
+func TestNormalizeDanmakuFormats(t *testing.T) {
+	formats, err := normalizeDanmakuFormats([]string{"ass", "xml,ass"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(formats) != 2 || formats[0] != "ass" || formats[1] != "xml" {
+		t.Fatalf("formats = %v", formats)
+	}
+	formats, err = normalizeDanmakuFormats(nil)
+	if err != nil || len(formats) != 1 || formats[0] != "ass" {
+		t.Fatalf("default formats = %v, %v", formats, err)
+	}
+	if _, err := normalizeDanmakuFormats([]string{"srt"}); err == nil {
+		t.Fatal("normalizeDanmakuFormats should reject srt")
+	}
+}

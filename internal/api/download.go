@@ -21,6 +21,8 @@ type VideoPage struct {
 	Page  int
 	CID   int64
 	Title string
+	// DurationSeconds 是该分P的时长, 用于推导弹幕分段数量.
+	DurationSeconds int
 }
 
 func (c *Client) GetVideoURL(ctx context.Context, bvid string, cred *Credential) (string, error) {
@@ -95,7 +97,12 @@ func normalizeVideoPages(items []map[string]any) []VideoPage {
 		if title == "" {
 			title = stringValue(item["title"])
 		}
-		pages = append(pages, VideoPage{Page: page, CID: int64Value(item["cid"], 0), Title: title})
+		pages = append(pages, VideoPage{
+			Page:            page,
+			CID:             int64Value(item["cid"], 0),
+			Title:           title,
+			DurationSeconds: intValue(item["duration"], 0),
+		})
 	}
 	return pages
 }

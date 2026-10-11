@@ -6,6 +6,7 @@
 
 - 视频详情, AI 总结, 评论和相关推荐.
 - 字幕轨道列出与导出, 覆盖普通字幕和平台标记的 AI 字幕.
+- 弹幕获取与导出, 支持 ASS 和 XML, 并可发送弹幕.
 - UP 主资料, 视频列表, 合集和系列列表, 专栏, 视频, 用户, 番剧, 直播和影视搜索.
 - 热门视频, 排行榜, 收藏夹, 关注, 历史和稍后再看.
 - 动态时间线, 我的动态, 文字动态发布和删除.
@@ -64,6 +65,24 @@ go run ./cmd/bili video st "https://www.bilibili.com/video/BV1ABcsztEcY?p=2" -o 
 
 `bili video subtitle` 会列出播放器接口返回的所有字幕轨道, 包含 ID, 语言, 字幕类型, AI 标记, 作者和字幕行数. 可通过 `--id`, `--language` 或 `--type all|ai|non-ai` 筛选轨道. `--language` 使用 API 的 `lan`, 并兼容 `zh-CN` 与 `zh_CN` 两种写法. `-o` 始终指定输出目录, 字幕会写为 `<视频基名>.<语言>.srt`, 与下载视频共享基名以便播放器自动识别. 多分P视频需通过 URL 的 `?p=N` 选择对应字幕.
 
+## 弹幕
+
+```shell
+go run ./cmd/bili video danmaku BV1ABcsztEcY
+go run ./cmd/bili video danmu BV1ABcsztEcY -o ./downloads --format ass,xml
+go run ./cmd/bili video danmaku "https://www.bilibili.com/video/BV1ABcsztEcY?p=2" -o ./downloads
+go run ./cmd/bili video danmaku BV1ABcsztEcY --json --limit 100
+go run ./cmd/bili video danmaku send BV1ABcsztEcY "前方高能" --progress 1m20s --mode top --color "#FF0000"
+```
+
+`bili video danmaku` 按视频时长逐段拉取弹幕并合并去重, 按出现时间排序. 终端默认输出概览与前 20 条预览, `--limit` 可调整预览条数. `--format` 支持 `ass` 和 `xml`, 可逗号分隔或重复传参. `-o` 指定导出目录, 文件写为 `<视频基名>.ass` 与 `<视频基名>.xml`, 与下载视频和字幕共享基名, 播放器会自动加载同名弹幕. 导出文件始终包含全部弹幕, 不受 `--limit` 影响. ASS 排版会为同一时刻的滚动弹幕分配不同的行以避免重叠, 可用 `--ass-fontsize`, `--ass-font` 和 `--ass-duration` 调整. XML 沿用 B 站标准格式, 便于其他工具读取.
+
+需要完整条目时使用 `--json` 或 `--yaml`, 此时 `--limit 0` 表示输出全部弹幕.
+
+弹幕接口返回的是当前可见的弹幕池, 通常少于 `bili video` 详情里显示的弹幕统计数. 多分P视频需通过 URL 的 `?p=N` 选择对应分P.
+
+`bili video danmaku send` 发送一条弹幕, 需要登录, 属于写操作, 在 `safety.read_only = true` 下会被拒绝. `--progress` 支持 `12.5`, `12.5s`, `1m20s`, `00:12.5` 和 `1:20:00`; `--mode` 支持 `scroll`, `top` 和 `bottom`; `--color` 支持 `#RRGGBB` 或十进制. 也可用 `--from-file` 从文件读取内容.
+
 ## 视频下载
 
 ```shell
@@ -74,13 +93,14 @@ bili video download BV1ABcsztEcY --audio-only
 bili video download BV1ABcsztEcY --video-only
 bili video download BV1ABcsztEcY --no-merge
 bili video download BV1ABcsztEcY --with-srt
+bili video download BV1ABcsztEcY --with-danmaku
 ```
 
 `bili video download` 默认保存到当前文件夹. DASH 地址会分别保存 `<标题>_audio.m4a` 和 `<标题>_video.m4a`, 然后尝试使用 `ffmpeg -c copy` 生成 `<标题>.mp4`. `--no-merge` 可保留两个流而不合并. 原生 `durl` 地址会直接保存一个 `.mp4`.
 
 媒体下载会在服务器支持 HTTP Range 时使用配置的并发线程数分段下载, 不支持时自动回退为单请求下载.
 
-多分P视频必须在 URL 中指定 `?p=N`. 未指定时会列出所有分P及其标题, 不会下载第一P. 文件名会包含 `P` 序号和该分P的标题. `--with-srt` 会尝试选择并保存一条字幕, 优先中文, 同语言优先人工字幕, 其次 AI, 再按英文和其他语言兜底. 交互终端会显示下载进度条. `--audio-only` 和 `--video-only` 不能同时使用.
+多分P视频必须在 URL 中指定 `?p=N`. 未指定时会列出所有分P及其标题, 不会下载第一P. 文件名会包含 `P` 序号和该分P的标题. `--with-srt` 会尝试选择并保存一条字幕, 优先中文, 同语言优先人工字幕, 其次 AI, 再按英文和其他语言兜底. `--with-danmaku` 会额外导出一份 ASS 弹幕, 基名与视频一致. 两者的失败都只输出警告, 不影响视频下载. 交互终端会显示下载进度条. `--audio-only` 和 `--video-only` 不能同时使用.
 
 ## 直播下载
 
