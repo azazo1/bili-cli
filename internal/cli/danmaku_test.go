@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"encoding/xml"
 	"fmt"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/encoding/protowire"
 
 	"github.com/azazo1/bilibili-cli/internal/api"
@@ -155,6 +157,47 @@ func newDanmakuTestApp(t *testing.T, server *httptest.Server, stdout *bytes.Buff
 	app.API.HTTP = server.Client()
 	app.Out = &output.Writer{Stdout: stdout, Stderr: &bytes.Buffer{}, DefaultMode: "rich"}
 	return app
+}
+
+// newDenseDanmakuTestServer 让 P2 的段 1 返回 count 条弹幕, 用于验证默认预览上限是否生效.
+func newDenseDanmakuTestServer(t *testing.T, count int) *httptest.Server {
+	t.Helper()
+	entries := make([]struct {
+		id       int64
+		progress int
+		mode     int
+		content  string
+	}, 0, count)
+	for index := 0; index < count; index++ {
+		entries = append(entries, struct {
+			id       int64
+			progress int
+			mode     int
+			content  string
+		}{
+			id:       int64(index + 1),
+			progress: index * 100,
+			mode:     1,
+			content:  fmt.Sprintf("弹幕-%03d", index+1),
+		})
+	}
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/x/frontend/finger/spi":
+			fmt.Fprint(w, `{"code":0,"data":{"b_3":"device3","b_4":"device4"}}`)
+		case "/x/internal/gaia-gateway/ExClimbWuzhi":
+			fmt.Fprint(w, `{"code":0}`)
+		case "/x/web-interface/view":
+			fmt.Fprint(w, `{"code":0,"data":{"bvid":"BV1ABcsztEcY","title":"demo","duration":700,"owner":{"mid":1,"name":"up"},"stat":{"view":9}}}`)
+		case "/x/player/pagelist":
+			fmt.Fprint(w, `{"code":0,"data":[{"page":1,"cid":41,"part":"first","duration":60},{"page":2,"cid":42,"part":"second","duration":700}]}`)
+		case "/bilibili.community.service.dm.v1.DM/DmSegMobile":
+			w.Header().Set("Grpc-Status", "0")
+			w.Write(danmakuGRPCSegmentReply(t, entries))
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+	}))
 }
 
 func TestDanmakuCommandExportsAssAndXML(t *testing.T) {
@@ -505,5 +548,118 @@ func TestDanmakuCommandFiltersByTimeRange(t *testing.T) {
 	output = stdout.String()
 	if !strings.Contains(output, "弹幕数\t1") || !strings.Contains(output, "底部弹幕") {
 		t.Fatalf("from-only filter wrong: %q", output)
+	}
+}
+
+func TestResolveDanmakuLimits(t *testing.T) {
+	newCommand := func() *cobra.Command {
+		return newDanmakuCommand(newTestApp(t))
+	}
+	// 默认: 终端预览 20 条, 结构化输出不截断.
+	command := newCommand()
+	payloadLimit, previewLimit := resolveDanmakuLimits(command, 0, false)
+	if payloadLimit != 0 || previewLimit != danmakuPreviewLimit {
+		t.Fatalf("default limits = (%d, %d)", payloadLimit, previewLimit)
+	}
+	// 用了时间或分段: 两者都不截断, 不再附带隐式预览上限.
+	payloadLimit, previewLimit = resolveDanmakuLimits(command, 0, true)
+	if payloadLimit != 0 || previewLimit != 0 {
+		t.Fatalf("range limits = (%d, %d), want (0, 0)", payloadLimit, previewLimit)
+	}
+	// 显式 --limit 优先于范围推断.
+	command = newCommand()
+	if err := command.Flags().Set("limit", "5"); err != nil {
+		t.Fatal(err)
+	}
+	payloadLimit, previewLimit = resolveDanmakuLimits(command, 5, true)
+	if payloadLimit != 5 || previewLimit != 5 {
+		t.Fatalf("explicit limit = (%d, %d), want (5, 5)", payloadLimit, previewLimit)
+	}
+	// 显式 --limit 0 表示不截断, 即使没有范围参数.
+	command = newCommand()
+	if err := command.Flags().Set("limit", "0"); err != nil {
+		t.Fatal(err)
+	}
+	payloadLimit, previewLimit = resolveDanmakuLimits(command, 0, false)
+	if payloadLimit != 0 || previewLimit != 0 {
+		t.Fatalf("explicit zero limit = (%d, %d), want (0, 0)", payloadLimit, previewLimit)
+	}
+}
+
+func TestDanmakuCommandTimeRangeBypassesPreviewLimit(t *testing.T) {
+	// 段 1 有 50 条弹幕, 全部落在前 5 秒, 因此默认预览上限必然会触发.
+	server := newDenseDanmakuTestServer(t, 50)
+	defer server.Close()
+	rangeArgs := []string{"video", "danmaku", "BV1ABcsztEcY?p=2", "--from", "0s", "--to", "10s"}
+
+	// 未加时间筛选时, 预览被默认上限截断.
+	stdout := &bytes.Buffer{}
+	app := newDanmakuTestApp(t, server, stdout)
+	root := NewRoot(app)
+	root.SetArgs([]string{"video", "danmaku", "BV1ABcsztEcY?p=2"})
+	if err := root.ExecuteContext(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout.String(), "已预览 20 条") {
+		t.Fatalf("default preview limit not applied: %q", stdout.String())
+	}
+
+	// 加了时间筛选后不再截断, 也不应再出现截断提示.
+	stdout.Reset()
+	app = newDanmakuTestApp(t, server, stdout)
+	root = NewRoot(app)
+	root.SetArgs(rangeArgs)
+	if err := root.ExecuteContext(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "弹幕数\t50") {
+		t.Fatalf("unexpected item count: %q", output)
+	}
+	if strings.Contains(output, "已预览") {
+		t.Fatalf("time range should not report truncation: %q", output)
+	}
+	// 最后一条必须出现, 说明确实没有截断.
+	if !strings.Contains(output, "弹幕-050") {
+		t.Fatalf("last danmaku was truncated: %q", output)
+	}
+
+	// 显式 --limit 仍然优先于范围推断.
+	stdout.Reset()
+	app = newDanmakuTestApp(t, server, stdout)
+	root = NewRoot(app)
+	root.SetArgs(append(append([]string{}, rangeArgs...), "--limit", "5"))
+	if err := root.ExecuteContext(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout.String(), "已预览 5 条") {
+		t.Fatalf("explicit --limit ignored: %q", stdout.String())
+	}
+}
+
+func TestDanmakuCommandJSONLimitStillTruncates(t *testing.T) {
+	server := newDanmakuTestServer(t, nil)
+	defer server.Close()
+	stdout := &bytes.Buffer{}
+	app := newDanmakuTestApp(t, server, stdout)
+	root := NewRoot(app)
+	root.SetArgs([]string{"video", "danmaku", "BV1ABcsztEcY?p=2", "--json", "--limit", "1"})
+	if err := root.ExecuteContext(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		Data struct {
+			Total int   `json:"total"`
+			Items []any `json:"items"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Data.Total != 3 {
+		t.Fatalf("total = %d, want 3", payload.Data.Total)
+	}
+	if len(payload.Data.Items) != 1 {
+		t.Fatalf("items = %d, want 1 (explicit --limit)", len(payload.Data.Items))
 	}
 }

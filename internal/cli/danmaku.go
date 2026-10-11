@@ -55,7 +55,7 @@ func newDanmakuCommand(app *App) *cobra.Command {
 	}
 	command.Flags().StringVarP(&options.outputDir, "output", "o", "", "弹幕导出目录, 留空则只输出到终端")
 	command.Flags().StringSliceVar(&options.formats, "format", []string{"ass"}, "导出格式, 支持 ass 和 xml")
-	command.Flags().IntVar(&options.limit, "limit", 0, "终端与结构化输出的弹幕条数上限, 0 表示全部")
+	command.Flags().IntVar(&options.limit, "limit", 0, "条数上限, 默认预览 20 条; 使用 --from/--to/--segment 或传 0 时不截断")
 	command.Flags().IntVar(&options.segment, "segment", 0, "只拉取第 N 个 6 分钟分段, 0 表示全部")
 	command.Flags().StringVar(&options.from, "from", "", "只显示该时间之后的弹幕, 支持 1m20s 或 00:12.5")
 	command.Flags().StringVar(&options.to, "to", "", "只显示该时间之前的弹幕, 格式同 --from")
@@ -141,10 +141,26 @@ func runDanmakuCommand(app *App, cmd *cobra.Command, input string, options *danm
 		"count", len(result.Items), "total_segments", result.TotalSegments,
 		"segment", result.Segment, "formats", formats)
 
-	payload := danmakuCommandPayload(reference.BVID, reference.Page, selectedPage, result, options.limit, exports, warnings)
+	// 结构化输出与终端预览的上限分开决定, 0 表示不截断.
+	rangeUsed := fromMs >= 0 || toMs >= 0 || options.segment > 0
+	payloadLimit, previewLimit := resolveDanmakuLimits(cmd, options.limit, rangeUsed)
+	payload := danmakuCommandPayload(reference.BVID, reference.Page, selectedPage, result, payloadLimit, exports, warnings)
 	return app.CompleteTable(payload, mode, options.asJSON, options.asYAML, func(w io.Writer) {
-		renderDanmakuResult(app, w, reference.BVID, reference.Page, selectedPage, result, options.limit, exports, warnings)
+		renderDanmakuResult(app, w, reference.BVID, reference.Page, selectedPage, result, previewLimit, exports, warnings)
 	})
+}
+
+// resolveDanmakuLimits 返回结构化输出与终端预览各自使用的条数上限, 0 表示不截断.
+// 显式 --limit 优先; 使用 --from/--to/--segment 定位后不再附带终端默认的预览上限,
+// 否则按时间或分段筛选出来的结果仍会被截断.
+func resolveDanmakuLimits(cmd *cobra.Command, limit int, rangeUsed bool) (int, int) {
+	if cmd.Flags().Changed("limit") {
+		return limit, limit
+	}
+	if rangeUsed {
+		return 0, 0
+	}
+	return 0, danmakuPreviewLimit
 }
 
 func normalizeDanmakuFormats(values []string) ([]string, error) {
@@ -387,14 +403,10 @@ func renderDanmakuResult(app *App, w io.Writer, bvid string, page int, selectedP
 		rows = append(rows, []string{"导出 " + strings.ToUpper(item.Format), item.Path})
 	}
 	app.renderTable(w, "弹幕", []string{"字段", "内容"}, rows)
-	// --limit 大于 0 时预览同样使用该上限, 与结构化输出保持一致.
-	previewLimit := danmakuPreviewLimit
-	if limit > 0 {
-		previewLimit = limit
-	}
+	// previewLimit 为 0 表示不截断.
 	preview := result.Items
-	if len(preview) > previewLimit {
-		preview = preview[:previewLimit]
+	if limit > 0 && len(preview) > limit {
+		preview = preview[:limit]
 	}
 	previewRows := make([][]string, 0, len(preview))
 	for _, item := range preview {
